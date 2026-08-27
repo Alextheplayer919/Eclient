@@ -27,15 +27,14 @@ object RotationUtil {
         return Rotation(y.coerceIn(-180f, 180f), p.coerceIn(-90f, 90f))
     }
 
-    // "Legit" smoothing: sabit bir smoothFactor kullanan exponential smoothing
-    // (KillAura/KillAuraPro head lock'ta olduğu gibi) her tick AYNI oranda
-    // döner — bu, rotation-speed-consistency check'lerinin (bkz. MX
-    // Anticheat, LiquidBounce forum "Rotation Speed Consistency") tam
-    // yakaladığı patern: %75-100 sabit dönüş hızı. Buradaki fark: smoothFactor
-    // her çağrıda küçük bir aralıkta rastgele değişiyor (speedJitter) ve
-    // sonuca da küçük bir açısal jitter ekleniyor — yani hem hız hem de
-    // varış açısı tick'ten tick'e biraz değişkenlik gösteriyor, tam sabit
-    // oran/GCD paterni oluşmuyor.
+    /**
+     * Smooth rotation with wider overshoot and jitter for anti-detection.
+     * Features:
+     * - Randomized speed factor per tick (breaks consistency checks)
+     * - Overshoot past target (1.2x-1.8x yaw, 1.1x-1.5x pitch)
+     * - Jitter applied to final angles
+     * - Full GCD-aware normalization
+     */
     fun smoothTo(
         currentYaw: Float, currentPitch: Float,
         target: Rotation,
@@ -50,11 +49,18 @@ object RotationUtil {
         var diff = target.yaw - currentYaw
         if (diff > 180f) diff -= 360f
         if (diff < -180f) diff += 360f
-        val rawYaw = currentYaw + diff * factor
-        val rawPitch = currentPitch + (target.pitch - currentPitch) * factor
+        
+        // WIDER: Overshoot past target (1.2x - 1.8x)
+        val overshoot = 1.2f + (Math.random() * 0.6f).toFloat()
+        val rawYaw = currentYaw + diff * factor * overshoot
+        
+        // WIDER: Pitch overshoot (1.1x - 1.5x)
+        val pitchOvershoot = 1.1f + (Math.random() * 0.4f).toFloat()
+        val rawPitch = currentPitch + (target.pitch - currentPitch) * factor * pitchOvershoot
 
-        val jitteredYaw = rawYaw + (Math.random() * yawJitter * 2 - yawJitter).toFloat()
-        val jitteredPitch = rawPitch + (Math.random() * pitchJitter * 2 - pitchJitter).toFloat()
+        // WIDER: Larger jitter range (doubled)
+        val jitteredYaw = rawYaw + (Math.random() * yawJitter * 4 - yawJitter * 2).toFloat()
+        val jitteredPitch = rawPitch + (Math.random() * pitchJitter * 4 - pitchJitter * 2).toFloat()
 
         return Rotation(normalize(jitteredYaw), jitteredPitch.coerceIn(-90f, 90f))
     }
