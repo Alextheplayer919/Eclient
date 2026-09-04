@@ -5,7 +5,7 @@ import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.*
-import com.rubidiumclient.module.social.isFriend
+import com.rubidiumclient.module.social.isFriendEntity   // changed
 import com.rubidiumclient.utils.CritLock
 import com.rubidiumclient.utils.MathUtil
 import com.rubidiumclient.utils.PacketUtil
@@ -54,7 +54,6 @@ class KillAura : BaseModule(
     private val orbitRange     = float("Orbit Range",   4f,   1f,  10f)
     private val orbitSpeed     = float("Orbit Speed",   30f,  1f,  100f)
 
-    // ---------- Crit ----------
     private val critMode       = enum("Crit Mode", CritMode.UltraFast)
 
     companion object {
@@ -160,25 +159,29 @@ class KillAura : BaseModule(
 
         scope.launch {
             if (needsCritInjection) {
-                CritLock.tryRunWait(CRIT_LOCK_KEY, timeoutMs = 30L) {
-                    when (critMode.value) {
-                        CritMode.Fast      -> injectCritFastUp(session)
-                        CritMode.UltraFast -> injectCritUltraFastUp(session)
-                        CritMode.None      -> {}
-                    }
+                if (CritLock.tryAcquire(CRIT_LOCK_KEY)) {
+                    try {
+                        when (critMode.value) {
+                            CritMode.Fast      -> injectCritFastUp(session)
+                            CritMode.UltraFast -> injectCritUltraFastUp(session)
+                            CritMode.None      -> {}
+                        }
 
-                    repeat(pendingAttacks) {
-                        PacketUtil.sendSwing(session)
-                        toAttack.forEach { t ->
-                            if (Random.nextInt(100) < hitChance.value) {
-                                val click = Vector3f.from(t.x, t.y + 1.5f, t.z)
-                                PacketUtil.sendAttack(session, t.runtimeId, slot, click)
+                        repeat(pendingAttacks) {
+                            PacketUtil.sendSwing(session)
+                            toAttack.forEach { t ->
+                                if (Random.nextInt(100) < hitChance.value) {
+                                    val click = Vector3f.from(t.x, t.y + 1.5f, t.z)
+                                    PacketUtil.sendAttack(session, t.runtimeId, slot, click)
+                                }
                             }
                         }
-                    }
 
-                    if (critMode.value != CritMode.None) {
-                        PacketUtil.sendMoveAtSelf(session, dyOffset = 0f, onGround = true)
+                        if (critMode.value != CritMode.None) {
+                            PacketUtil.sendMoveAtSelf(session, dyOffset = 0f, onGround = true)
+                        }
+                    } finally {
+                        CritLock.release(CRIT_LOCK_KEY)
                     }
                 }
             } else {
@@ -262,7 +265,7 @@ class KillAura : BaseModule(
         for (e in raw) {
             if (!includeMobs.value && !e.isPlayer) continue
             if (e.runtimeId == EntityTracker.selfRuntimeId) continue
-            if (ignoreFriends.value && e.isFriend) continue   // using isFriend
+            if (ignoreFriends.value && e.isFriendEntity) continue   // fixed
             if (antiBot.value && e.isLikelyBot()) continue
             scored.add(Scored(e, MathUtil.dist3sq(e.x, e.y, e.z, sx, sy, sz)))
         }
