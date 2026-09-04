@@ -73,7 +73,9 @@ jobs:
       - name: Decode keystore
         if: github.ref == 'refs/heads/main'
         run: echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > app/release.jks
-
+      - name: Debug keystore checksum
+        if: github.ref == 'refs/heads/main'
+        run: md5sum app/release.jks
       - name: Build Release APK
         if: github.ref == 'refs/heads/main'
         run: ./gradlew assembleRelease
