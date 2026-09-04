@@ -1,6 +1,10 @@
 package com.rubidiumclient.module
 
 import com.rubidiumclient.core.relay.RubidiumRelaySession
+import com.rubidiumclient.module.combat.KillAura
+import com.rubidiumclient.module.combat.SCRFighter
+import com.rubidiumclient.module.misc.PacketCollector
+import com.rubidiumclient.module.movement.MotionFly
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,4 +72,14 @@ object ModuleManager {
     fun playerModules()   = byCategory(ModuleCategory.PLAYER)
     fun worldModules()    = byCategory(ModuleCategory.WORLD)
     fun miscModules()     = byCategory(ModuleCategory.MISC)
+
+    // ── Auto‑register modules when app starts ──
+    init {
+        registerAll(
+            MotionFly(),
+            KillAura(),
+            SCRFighter(),
+            PacketCollector()   // <-- NOW REGISTERED
+        )
+    }
 }
