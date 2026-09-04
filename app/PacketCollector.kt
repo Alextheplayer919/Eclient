@@ -56,7 +56,7 @@ class PacketCollector : BaseModule(
             }
         } catch (e: Exception) {
             println("PacketCollector: Failed to open log file: ${e.message}")
-            disable()
+            setEnabled(false)  // <-- FIXED: was `disable()` which doesn't exist
         }
     }
 
