@@ -22,9 +22,9 @@ class KillAura : BaseModule(
 
     enum class HitType   { Single, Multi }
     enum class DelayMode { Interval, Cps }
-    enum class RotMode   { None, Instant, Smooth, Silent }   // Silent = server only, no camera snap
+    enum class RotMode   { None, Instant, Smooth, Silent }
     enum class CritMode  { None, Fast, UltraFast }
-    enum class StrafeMode { None, Orbit, Manual }            // Orbit = auto‑circles, Manual = you control A/D
+    enum class StrafeMode { None, Orbit, Manual }
 
     // ── Core settings ──────────────────────────────
     private val range          = float("Range",          32f,  1f,   32f)
@@ -40,18 +40,18 @@ class KillAura : BaseModule(
     private val boostDelay     = float("Boost Delay",    0.1f, 0.1f,  60f)
     private val boostAttempts  = int  ("Boost Attempts", 20,    1,    20)
     private val rotMode        = enum ("Rotation",        RotMode.Smooth)
-    private val rotationSpeed  = float("Rotation Speed", 30f,   0f,   30f) // for Smooth
-    private val osuRots        = bool ("Osu Rots",       false)            // snap to 36.4° steps
+    private val rotationSpeed  = float("Rotation Speed", 30f,   0f,   30f)
+    private val osuRots        = bool ("Osu Rots",       false)
     private val ignoreFriends  = bool ("Ignore Friends",  true)
     private val antiBot        = bool ("Anti Bot",        true)
     private val includeMobs    = bool ("Mobs",           false)
     private val shortcut       = bool ("Shortcut",       false)
 
-    // ── Wide‑rotation / Orbital settings ──────────
+    // ── Wide‑rotation / Orbital ──────────────────────
     private val strafeMode     = enum ("Strafe Mode",    StrafeMode.Orbit)
-    private val orbitRange     = float("Orbit Range",   4.5f,  1f,   12f)   // keep this distance
-    private val orbitSpeed     = float("Orbit Speed",   40f,  5f,   120f)   // degrees per tick
-    private val approachSpeed  = float("Approach Speed",0.8f, 0.1f, 3f)    // when too far
+    private val orbitRange     = float("Orbit Range",   4.5f,  1f,   12f)
+    private val orbitSpeed     = float("Orbit Speed",   40f,  5f,   120f)
+    private val approachSpeed  = float("Approach Speed",0.8f, 0.1f, 3f)
     private val verticalSpeed  = float("Vertical Speed",1.8f, 0.1f, 4f)
 
     private val critMode       = enum("Crit Mode", CritMode.UltraFast)
@@ -130,26 +130,25 @@ class KillAura : BaseModule(
                 RotMode.Silent -> {
                     headLockYaw   = targetYaw
                     headLockPitch = rot.pitch
-                    // Silent: do NOT update EntityTracker.selfYaw/Pitch
                 }
                 else -> {}
             }
-            // Apply rotation to packet (server sees it)
             pkt.rotation = Vector3f.from(headLockPitch, headLockYaw, headLockYaw)
-            // If not Silent, also update local camera
             if (rotMode.value != RotMode.Silent) {
                 EntityTracker.selfYaw   = headLockYaw
                 EntityTracker.selfPitch = headLockPitch
             }
         }
 
-        // ── Wide‑orbit movement (with smooth positioning) ──
+        // ── Wide‑orbit movement ────────────────────────
         if (primary != null && strafeMode.value != StrafeMode.None) {
             val now = System.currentTimeMillis()
             if (now - lastMoveMs >= MOVE_INTERVAL_MS) {
                 lastMoveMs = now
                 val session = event.session
-                moveOrbit(session, primary)
+                scope.launch {
+                    moveOrbit(session, primary)
+                }
             }
         }
 
@@ -213,9 +212,8 @@ class KillAura : BaseModule(
         event.cancelAndReplace(pkt)
     }
 
-    // ── Movement: approach + orbit (wide rotations) ──
-    private fun moveOrbit(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity) {
-        // If TPAura is active, don't interfere
+    // ── Movement: approach + orbit ──────────────────
+    private suspend fun moveOrbit(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity) {
         if (tpAuraRecentlyMoved()) return
 
         val selfX = EntityTracker.selfX
@@ -230,10 +228,9 @@ class KillAura : BaseModule(
         val dz = tz - selfZ
         val horizDist = sqrt(dx * dx + dz * dz)
 
-        val targetY = ty + orbitRange.value * 0.5f // keep at mid‑height
+        val targetY = ty + orbitRange.value * 0.5f
 
         val newPos = if (horizDist > orbitRange.value * 1.5f) {
-            // Too far → approach smoothly
             val step = approachSpeed.value
             val len = horizDist.coerceAtLeast(0.001f)
             Vector3f.from(
@@ -242,7 +239,6 @@ class KillAura : BaseModule(
                 selfZ + dz / len * step
             )
         } else {
-            // In range → orbit
             when (strafeMode.value) {
                 StrafeMode.Orbit -> {
                     orbitAngle += orbitSpeed.value
@@ -256,9 +252,6 @@ class KillAura : BaseModule(
                     )
                 }
                 StrafeMode.Manual -> {
-                    // Manual strafe: you control A/D; we keep you at orbitRange
-                    // but we do NOT override your lateral movement – only correct distance.
-                    // Since we cannot read input, we simply keep distance by moving toward/away.
                     val currentDist = horizDist
                     val desired = orbitRange.value
                     if (abs(currentDist - desired) > 0.3f) {
@@ -271,7 +264,6 @@ class KillAura : BaseModule(
                             selfZ + dirZ * move
                         )
                     } else {
-                        // Already at correct distance – stay
                         Vector3f.from(selfX, selfY, selfZ)
                     }
                 }
@@ -279,7 +271,6 @@ class KillAura : BaseModule(
             }
         }
 
-        // Send using TimerPvP (safe split‑step teleport)
         try {
             val yaw = if (rotMode.value != RotMode.None) headLockYaw else EntityTracker.selfYaw
             val pitch = if (rotMode.value != RotMode.None) headLockPitch else EntityTracker.selfPitch
