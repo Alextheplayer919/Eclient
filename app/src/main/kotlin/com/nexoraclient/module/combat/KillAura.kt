@@ -4,7 +4,7 @@ import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.*
-import com.rubidiumclient.module.social.isFriendEntity
+import com.rubidiumclient.module.social.isFriend
 import com.rubidiumclient.utils.CritLock
 import com.rubidiumclient.utils.MathUtil
 import com.rubidiumclient.utils.PacketUtil
@@ -108,8 +108,8 @@ class KillAura : BaseModule(
         // ----- Orbit: keep distance by circling the target -----
         if (orbit.value && primary != null) {
             if (orbitADControl.value) {
-                // A/D input from moveVector.x (positive = right, negative = left)
-                val strafeInput = pkt.moveVector.x
+                // A/D input from moveVecX (positive = right, negative = left)
+                val strafeInput = pkt.moveVecX
                 orbitAngle += strafeInput * orbitSpeed.value * 0.5f
             } else {
                 orbitAngle += orbitSpeed.value // auto-rotate
@@ -119,7 +119,6 @@ class KillAura : BaseModule(
             val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
             val dx = sin(rad) * orbitRange.value
             val dz = cos(rad) * orbitRange.value
-            // Keep Y at target's height + half range (so you're not underground or floating too high)
             val targetPos = Vector3f.from(
                 primary.x + dx,
                 primary.y + orbitRange.value * 0.5f,
@@ -230,7 +229,7 @@ class KillAura : BaseModule(
             if (!e.isPlayer || e.runtimeId == EntityTracker.selfRuntimeId) continue
             val angle = if (needsAngle) EntityTracker.angleToEntity(e) else 0f
             if (fov.value < 360 && angle > fov.value / 2f) continue
-            if (ignoreFriends.value && e.isFriendEntity) continue
+            if (ignoreFriends.value && e.isFriend) continue  // changed: isFriendEntity -> isFriend
             if (antiBot.value && e.isLikelyBot()) continue
             val key = when (priorityMode.value) {
                 PriorityMode.Distance     -> MathUtil.dist3sq(e.x, e.y, e.z, sx, sy, sz)
