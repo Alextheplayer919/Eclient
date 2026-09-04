@@ -13,6 +13,7 @@ import kotlinx.coroutines.*
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
+import kotlin.math.*
 
 class KillAura : BaseModule(
     name        = "KillAura",
@@ -24,6 +25,7 @@ class KillAura : BaseModule(
     enum class PriorityMode { Distance, Health, LowestHealth, Direction }
     enum class CritMode     { InputFlag, MovePacket, None }
 
+    // ---------- Core settings ----------
     private val cpsMin          = int  ("CPS Min",          20,    0,  20)
     private val cpsMax          = int  ("CPS Max",          20,    0,  20)
     private val range           = float("Range",            18f,   1f, 18f)
@@ -41,19 +43,14 @@ class KillAura : BaseModule(
     private val requireLos      = bool ("Require LOS",      false)
     private val shortcut        = bool ("Shortcut",         false)
 
-    private val keepDistance          = bool ("Keep Distance",           false)
-    private val teleportBehind        = bool ("Teleport Behind",         false)
-    private val strafe                = bool ("Strafe",                 false)
-    private val strafeSpeed           = float("Strafe Speed",           30f,  1f,  30f)
-    private val keepDistanceRange     = float("Keep Distance",           4f,   1f,  10f)
-    private val keepDistanceTolerance = float("Keep Distance Tolerance", 0.4f, 0.1f, 3f)
-    private val keepDistanceSpeed     = float("Keep Distance Speed",     8f,   1f,  8f)
-    private val keepDistanceYOffset   = float("Keep Distance Y Offset",  0f,  -10f, 10f)
-    private val keepDistanceRetreatOnly = bool("Retreat Only",           false)
+    // ---------- Orbit (replaces broken keepDistance) ----------
+    private val orbit          = bool ("Orbit",              false)
+    private val orbitRange     = float("Orbit Range",       4f,   1f,  10f)
+    private val orbitSpeed     = float("Orbit Speed",       30f,  1f,  100f) // degrees per tick
+    private val orbitADControl = bool ("A/D Control Orbit", false)
 
     companion object {
         private const val CRIT_LOCK_KEY = "crit-injection"
-        private const val INPUT_TICK_MS = 50L
     }
 
     @Volatile private var pendingAttack  = false
@@ -64,7 +61,7 @@ class KillAura : BaseModule(
     @Volatile private var headLockPitch  = 0f
     @Volatile private var critPending    = false
     @Volatile private var lastMovePacketCritMs = 0L
-    @Volatile private var strafeAngle    = 0f
+    @Volatile private var orbitAngle     = 0f // current orbit position (degrees)
 
     private var tickJob: Job? = null
 
@@ -78,7 +75,7 @@ class KillAura : BaseModule(
         headLockPitch = EntityTracker.selfPitch
         critPending   = false
         lastMovePacketCritMs = 0L
-        strafeAngle   = 0f
+        orbitAngle    = 0f
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -97,6 +94,7 @@ class KillAura : BaseModule(
         val targets = cachedTargets
         val primary = targets.firstOrNull()
 
+        // ----- Head lock -----
         if (headLock.value && primary != null) {
             val rot = RotationUtil.toEntity(primary)
             val f   = headLockSmooth.value
@@ -107,13 +105,33 @@ class KillAura : BaseModule(
             EntityTracker.selfPitch = headLockPitch
         }
 
-        if (keepDistance.value && primary != null) {
-            pkt.position = applyKeepDistance(pkt.position, primary)
+        // ----- Orbit: keep distance by circling the target -----
+        if (orbit.value && primary != null) {
+            if (orbitADControl.value) {
+                // A/D input from moveVector.x (positive = right, negative = left)
+                val strafeInput = pkt.moveVector.x
+                orbitAngle += strafeInput * orbitSpeed.value * 0.5f
+            } else {
+                orbitAngle += orbitSpeed.value // auto-rotate
+            }
+            orbitAngle %= 360f
+
+            val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
+            val dx = sin(rad) * orbitRange.value
+            val dz = cos(rad) * orbitRange.value
+            // Keep Y at target's height + half range (so you're not underground or floating too high)
+            val targetPos = Vector3f.from(
+                primary.x + dx,
+                primary.y + orbitRange.value * 0.5f,
+                primary.z + dz
+            )
+            pkt.position = targetPos
             EntityTracker.selfX = pkt.position.x
             EntityTracker.selfY = pkt.position.y
             EntityTracker.selfZ = pkt.position.z
         }
 
+        // ----- Crit via InputFlag -----
         if (critPending && critMode.value == CritMode.InputFlag && primary != null) {
             if (CritLock.tryAcquire(CRIT_LOCK_KEY)) {
                 if (EntityTracker.selfSprinting) pkt.inputData.add(PlayerAuthInputData.STOP_SPRINTING)
@@ -131,9 +149,14 @@ class KillAura : BaseModule(
         pendingAttack = false
         val session = event.session
 
+        // ----- Crit via MovePacket -----
         var movePacketCritFired = false
-        val tpAuraConflict = System.currentTimeMillis() - TPAura.lastPositionOverrideMs < 120L
-        if (critMode.value == CritMode.MovePacket && !tpAuraConflict && EntityTracker.selfOnGround && !EntityTracker.selfInWater) {
+        val tpAuraConflict = try {
+            System.currentTimeMillis() - TPAura.lastPositionOverrideMs < 120L
+        } catch (e: NoClassDefFoundError) { false }
+
+        if (critMode.value == CritMode.MovePacket && !tpAuraConflict &&
+            EntityTracker.selfOnGround && !EntityTracker.selfInWater) {
             val now2 = System.currentTimeMillis()
             if (now2 - lastMovePacketCritMs >= critInjectionCooldownMs.value) {
                 if (CritLock.tryAcquire(CRIT_LOCK_KEY)) {
@@ -225,55 +248,6 @@ class KillAura : BaseModule(
         EntityTracker.selfX, EntityTracker.selfY + 1.62f, EntityTracker.selfZ,
         t.x, t.y + 1.2f, t.z
     )
-
-    private fun applyKeepDistance(pos: Vector3f, target: EntityTracker.TrackedEntity): Vector3f {
-        val maxStep = keepDistanceSpeed.value * (INPUT_TICK_MS / 1000f)
-
-        val desiredY = target.y + keepDistanceYOffset.value
-        val diffY = desiredY - pos.y
-        val newY = if (kotlin.math.abs(diffY) <= keepDistanceTolerance.value) pos.y
-                   else pos.y + diffY.coerceIn(-maxStep, maxStep)
-
-        if (teleportBehind.value) {
-            val yawRad = Math.toRadians(target.yaw.toDouble()).toFloat()
-            val behindX = target.x + kotlin.math.sin(yawRad) * keepDistanceRange.value
-            val behindZ = target.z - kotlin.math.cos(yawRad) * keepDistanceRange.value
-            return stepToward(pos, newY, behindX, behindZ, maxStep)
-        }
-
-        if (strafe.value) {
-            strafeAngle = (strafeAngle + strafeSpeed.value) % 360f
-            val rad = Math.toRadians(strafeAngle.toDouble())
-            val orbitX = target.x + (kotlin.math.sin(rad) * keepDistanceRange.value).toFloat()
-            val orbitZ = target.z + (kotlin.math.cos(rad) * keepDistanceRange.value).toFloat()
-            return stepToward(pos, newY, orbitX, orbitZ, maxStep)
-        }
-
-        val dx = pos.x - target.x
-        val dz = pos.z - target.z
-        val horizDist = MathUtil.dist2(pos.x, pos.z, target.x, target.z)
-        if (horizDist < 0.05f) return Vector3f.from(pos.x, newY, pos.z)
-
-        val desired = keepDistanceRange.value
-        val tol = keepDistanceTolerance.value
-        val diff = horizDist - desired
-        if (kotlin.math.abs(diff) <= tol) return Vector3f.from(pos.x, newY, pos.z)
-
-        if (keepDistanceRetreatOnly.value && diff > 0f) return Vector3f.from(pos.x, newY, pos.z)
-
-        val dirX = dx / horizDist; val dirZ = dz / horizDist
-        val correction = (-diff).coerceIn(-maxStep, maxStep)
-
-        return Vector3f.from(pos.x + dirX * correction, newY, pos.z + dirZ * correction)
-    }
-
-    private fun stepToward(pos: Vector3f, newY: Float, targetX: Float, targetZ: Float, maxStep: Float): Vector3f {
-        val dx = targetX - pos.x; val dz = targetZ - pos.z
-        val dist = MathUtil.dist2(pos.x, pos.z, targetX, targetZ)
-        if (dist < 0.05f) return Vector3f.from(pos.x, newY, pos.z)
-        val step = dist.coerceAtMost(maxStep)
-        return Vector3f.from(pos.x + (dx / dist) * step, newY, pos.z + (dz / dist) * step)
-    }
 
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
 
