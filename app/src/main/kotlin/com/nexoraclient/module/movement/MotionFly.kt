@@ -26,14 +26,10 @@ class MotionFly : BaseModule(
 ) {
 
     enum class FlyMode {
-        /** Original SetEntityMotion – fast but may flag on some servers */
-        Motion,
-        /** VanillaFly – spoofs ground with MovePlayerPacket, best bypass */
-        Vanilla,
-        /** PacketFly – only MovePlayerPacket, uses ability packet */
-        Packet,
-        /** ElytraFly – simulates gliding */
-        Elytra
+        Motion,   // original SetEntityMotion
+        Vanilla,  // ground‑spoof with MovePlayerPacket
+        Packet,   // pure MovePlayerPacket + abilities
+        Elytra    // simulate elytra glide
     }
 
     // ── Original settings ──────────────────────────────────
@@ -128,11 +124,6 @@ class MotionFly : BaseModule(
         jitterSeed = kotlin.random.Random.nextDouble(0.0, 2.0 * Math.PI)
         grimTicks = 0
         rubberbandGuard.reset()
-        // Apply abilities for Vanilla / Packet modes
-        val session = PacketEventBus.currentSession
-        if (session != null && (flyMode.value == FlyMode.Vanilla || flyMode.value == FlyMode.Packet)) {
-            applyFlyAbilities(true, session)
-        }
     }
 
     override fun onDisable() {
@@ -184,17 +175,17 @@ class MotionFly : BaseModule(
         val wantUp = pkt.inputData.contains(PlayerAuthInputData.WANT_UP)
         val wantDown = pkt.inputData.contains(PlayerAuthInputData.WANT_DOWN)
 
-        val yaw = Math.toRadians(pkt.rotation.y.toDouble()).toFloat()
-        val sinYaw = sin(yaw)
-        val cosYaw = cos(yaw)
+        val yawRad = Math.toRadians(pkt.rotation.y.toDouble()).toFloat()
+        val sinYaw = sin(yawRad.toDouble()).toFloat()   // convert to Double, then back to Float
+        val cosYaw = cos(yawRad.toDouble()).toFloat()
 
         val strafe  = inputX * effHoriz
         val forward = inputZ * effHoriz
 
         // Jitter
         jitterSeed += 0.1
-        val jx = sin(jitterSeed) * jitter.value
-        val jz = cos(jitterSeed + 1.0) * jitter.value
+        val jx = (sin(jitterSeed) * jitter.value).toFloat()
+        val jz = (cos(jitterSeed + 1.0) * jitter.value).toFloat()
 
         // Vertical with Lifeboat bypass
         val vertical = when {
