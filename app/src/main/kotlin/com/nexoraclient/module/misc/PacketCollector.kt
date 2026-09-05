@@ -10,52 +10,56 @@ import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 
 class PacketCollector : BaseModule(
     name        = "PacketCollector",
     category    = ModuleCategory.MISC,
-    description = "Tüm paketleri Downloads klasörüne log'lar"
+    description = "Detailed packet logger – separate files per packet type"
 ), PacketEventBus.PacketListener {
 
-    // ── Settings ──────────────────────────────────
-    private val logDetailed   = bool("Detailed Log",     true)
-    private val maxLines      = int ("Max Lines",        50000, 1000, 200000)
-    private val autoFlush     = bool("Auto Flush",       true)
-    private val flushInterval = int ("Flush Interval",   5000,  1000, 30000)
+    // ── Settings ──────────────────────────────────────────
+    private val logDetailed     = bool("Detailed Log",       true)
+    private val separateFiles   = bool("Separate Files",     true)   // one file per packet type
+    private val excludeSpam     = bool("Exclude Spam",       true)   // skip MoveEntityAbsolutePacket, etc.
+    private val maxLinesPerFile = int ("Max Lines/File",     50000, 1000, 200000)
+    private val autoFlush       = bool("Auto Flush",         true)
+    private val flushInterval   = int ("Flush Interval (ms)",5000,  1000, 30000)
 
-    // ── Path ──────────────────────────────────────
-    private val logPath by lazy { getDefaultLogPath() }
+    // ── Path ──────────────────────────────────────────────
+    private val baseDir by lazy { getLogDirectory() }
 
-    // ── State ─────────────────────────────────────
-    private var writer: PrintWriter? = null
-    private var lineCount = 0
+    // ── State ─────────────────────────────────────────────
+    private val writers = ConcurrentHashMap<String, PrintWriter>()
+    private val lineCounts = ConcurrentHashMap<String, Int>()
     private var flushJob: Job? = null
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
     private val writeScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    // ── Spam filters ─────────────────────────────────────
+    private val spamPackets = setOf(
+        "MoveEntityAbsolutePacket",
+        "MoveEntityDeltaPacket",
+        "UpdateAttributesPacket",
+        "LevelEventPacket"
+    )
+
     override fun onEnable() {
         super.onEnable()
         try {
-            val file = File(logPath)
-            file.parentFile?.mkdirs()
-            writer = PrintWriter(FileWriter(file, true), true)
-            writer?.println("=== Packet Log started at ${Date()} ===")
-            writer?.flush()
-            lineCount = 0
+            File(baseDir).mkdirs()
             PacketEventBus.register(this)
-
             if (autoFlush.value) {
                 flushJob = writeScope.launch {
                     while (isActive) {
                         delay(flushInterval.value.toLong())
-                        writer?.flush()
+                        writers.values.forEach { it.flush() }
                     }
                 }
             }
         } catch (e: Exception) {
-            println("PacketCollector: Failed to open log file: ${e.message}")
+            println("PacketCollector: Failed to init: ${e.message}")
             setEnabled(false)
         }
     }
@@ -64,84 +68,132 @@ class PacketCollector : BaseModule(
         PacketEventBus.unregister(this)
         flushJob?.cancel()
         writeScope.launch {
-            writer?.apply {
-                println("=== Packet Log ended at ${Date()} ===")
-                flush()
-                close()
-            }
-            writer = null
+            writers.values.forEach { it.close() }
+            writers.clear()
+            lineCounts.clear()
         }
         super.onDisable()
     }
 
     override fun onPacket(event: PacketEvent) {
-        if (!isEnabled || writer == null) return
-
+        if (!isEnabled) return
         val pkt = event.packet
-        val dir = if (event.direction == PacketEvent.Direction.CLIENT_TO_SERVER) ">>>" else "<<<"
-        val ts = dateFormat.format(Date())
         val className = pkt.javaClass.simpleName
 
-        val summary = if (logDetailed.value) {
-            buildPacketSummary(pkt)
+        // Spam filter
+        if (excludeSpam.value && spamPackets.contains(className)) return
+
+        val dir = if (event.direction == PacketEvent.Direction.CLIENT_TO_SERVER) "CLIENT→SERVER" else "SERVER→CLIENT"
+        val ts = dateFormat.format(Date())
+        val details = if (logDetailed.value) buildDetailedSummary(pkt) else ""
+
+        val line = buildString {
+            append("[")
+            append(ts)
+            append("] ")
+            append(dir)
+            append(" | ")
+            append(className)
+            if (details.isNotEmpty()) {
+                append(" | ")
+                append(details)
+            }
+        }
+
+        // Write to appropriate file
+        val fileName = if (separateFiles.value) {
+            "$className.txt"
         } else {
-            ""
+            "packet_log.txt"
         }
-
-        val line = "[$ts] $dir $className$summary"
-        writeLine(line)
+        writeToFile(fileName, line)
     }
 
-    private fun writeLine(line: String) {
+    private fun writeToFile(fileName: String, line: String) {
         writeScope.launch {
-            writer?.println(line)
-            lineCount++
-            if (lineCount % 10 == 0) {
-                writer?.flush()
+            val writer = writers.computeIfAbsent(fileName) {
+                val file = File(baseDir, fileName)
+                PrintWriter(FileWriter(file, true), true)
             }
-            if (lineCount >= maxLines.value) {
-                writer?.println("!!! Max lines reached, rotating log !!!")
-                writer?.flush()
-                lineCount = 0
+            writer.println(line)
+            val count = lineCounts.merge(fileName, 1, Int::plus) ?: 1
+            if (count % 10 == 0) {
+                writer.flush()
+            }
+            if (count >= maxLinesPerFile.value) {
+                writer.println("!!! Max lines reached, rotating log !!!")
+                writer.flush()
+                // Close and reopen with a new file (rotate)
+                writer.close()
+                val rotatedName = fileName.replace(".txt", "_${System.currentTimeMillis()}.txt")
+                val newWriter = PrintWriter(FileWriter(File(baseDir, rotatedName), true), true)
+                writers[fileName] = newWriter
+                lineCounts[fileName] = 0
             }
         }
     }
 
-    private fun buildPacketSummary(pkt: BedrockPacket): String {
+    // ── Detailed packet summariser ──────────────────────
+    private fun buildDetailedSummary(pkt: BedrockPacket): String {
         return when (pkt) {
             is MovePlayerPacket -> {
                 val pos = pkt.position
                 val rot = pkt.rotation
-                " pos=(${pos.x}, ${pos.y}, ${pos.z}) rot=(${rot.x}, ${rot.y}, ${rot.z}) mode=${pkt.mode}"
+                "pos=(${pos.x}, ${pos.y}, ${pos.z}) | rot=(${rot.x}, ${rot.y}, ${rot.z}) | mode=${pkt.mode} | onGround=${pkt.isOnGround} | eid=${pkt.runtimeEntityId}"
             }
             is PlayerAuthInputPacket -> {
                 val pos = pkt.position
                 val rot = pkt.rotation
                 val motion = pkt.motion
-                val tick = pkt.tick
-                " pos=(${pos.x}, ${pos.y}, ${pos.z}) rot=(${rot.x}, ${rot.y}, ${rot.z}) motion=(${motion.x}, ${motion.y}) tick=$tick"
+                "pos=(${pos.x}, ${pos.y}, ${pos.z}) | rot=(${rot.x}, ${rot.y}, ${rot.z}) | motion=(${motion.x}, ${motion.y}) | tick=${pkt.tick} | inputData=${pkt.inputData.joinToString()}"
             }
             is SetEntityMotionPacket -> {
                 val motion = pkt.motion
-                " eid=${pkt.runtimeEntityId} motion=(${motion.x}, ${motion.y}, ${motion.z})"
+                "eid=${pkt.runtimeEntityId} | motion=(${motion.x}, ${motion.y}, ${motion.z})"
             }
             is UpdateAbilitiesPacket -> {
-                " perm=${pkt.playerPermission} cmd=${pkt.commandPermission} layers=${pkt.abilityLayers.size}"
+                "perm=${pkt.playerPermission} | cmd=${pkt.commandPermission} | layers=${pkt.abilityLayers.size} | layers=${pkt.abilityLayers.joinToString { it.layerType.name + ": " + it.abilityValues.joinToString() }}"
             }
-            else -> ""
+            is MoveEntityAbsolutePacket -> {
+                val pos = pkt.position
+                "eid=${pkt.runtimeEntityId} | pos=(${pos.x}, ${pos.y}, ${pos.z}) | rot=(${pkt.rotation.x}, ${pkt.rotation.y})"
+            }
+            is TextPacket -> {
+                "type=${pkt.type} | message=${pkt.message.take(50)}"
+            }
+            is LevelChunkPacket -> {
+                "chunkX=${pkt.chunkX} | chunkZ=${pkt.chunkZ} | subChunks=${pkt.subChunksCount}"
+            }
+            is UpdateBlockPacket -> {
+                "pos=(${pkt.blockPosition.x}, ${pkt.blockPosition.y}, ${pkt.blockPosition.z}) | runtimeId=${pkt.runtimeId} | flags=${pkt.flags}"
+            }
+            is AddEntityPacket -> {
+                "eid=${pkt.runtimeEntityId} | type=${pkt.entityType} | pos=(${pkt.position.x}, ${pkt.position.y}, ${pkt.position.z}) | rot=(${pkt.rotation.x}, ${pkt.rotation.y})"
+            }
+            is RemoveEntityPacket -> {
+                "eid=${pkt.runtimeEntityId}"
+            }
+            is SetEntityDataPacket -> {
+                "eid=${pkt.runtimeEntityId} | metadata size=${pkt.metadata.size}"
+            }
+            else -> {
+                // Generic: print class name only (or some other info if available)
+                ""
+            }
         }
     }
 
-    private fun getDefaultLogPath(): String {
-        val androidDownload = "/storage/emulated/0/Download/packet_log.txt"
+    // ── Path helpers ─────────────────────────────────────
+    private fun getLogDirectory(): String {
+        val androidBase = "/storage/emulated/0/Download/packet_logs"
         if (File("/storage/emulated/0").exists()) {
-            return androidDownload
+            return androidBase
         }
         val userHome = System.getProperty("user.home")
         return if (System.getProperty("os.name").startsWith("Windows")) {
-            "$userHome\\Downloads\\packet_log.txt"
+            "$userHome\\Downloads\\packet_logs"
         } else {
-            "$userHome/Downloads/packet_log.txt"
+            "$userHome/Downloads/packet_logs"
         }
     }
 }
