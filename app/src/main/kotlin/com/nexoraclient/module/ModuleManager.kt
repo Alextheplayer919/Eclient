@@ -1,10 +1,10 @@
-package com.nexoraclient.module
+package com.rubidiumclient.module
 
-import com.nexoraclient.core.relay.RubidiumRelaySession
-import com.nexoraclient.module.combat.KillAura
-import com.nexoraclient.module.combat.SCRFighter
-import com.nexoraclient.module.misc.PacketCollector
-import com.nexoraclient.module.movement.MotionFly
+import com.rubidiumclient.core.relay.RubidiumRelaySession
+import com.rubidiumclient.module.combat.KillAura
+import com.rubidiumclient.module.combat.SCRFighter
+import com.rubidiumclient.module.misc.PacketCollector
+import com.rubidiumclient.module.movement.MotionFly
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,13 +73,13 @@ object ModuleManager {
     fun worldModules()    = byCategory(ModuleCategory.WORLD)
     fun miscModules()     = byCategory(ModuleCategory.MISC)
 
-    // ── Auto‑register all modules on first access ──
+    // ── Auto‑register modules ──
     init {
         registerAll(
             MotionFly(),
             KillAura(),
             SCRFighter(),
-            PacketCollector()   // <-- Now registered
+            PacketCollector()
         )
     }
 }
