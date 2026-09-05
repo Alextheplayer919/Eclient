@@ -19,25 +19,20 @@ class PacketCollector : BaseModule(
     description = "Detailed packet logger – separate files per packet type"
 ), PacketEventBus.PacketListener {
 
-    // ── Settings ──────────────────────────────────────────
     private val logDetailed     = bool("Detailed Log",       true)
-    private val separateFiles   = bool("Separate Files",     true)   // one file per packet type
-    private val excludeSpam     = bool("Exclude Spam",       true)   // skip MoveEntityAbsolutePacket, etc.
+    private val separateFiles   = bool("Separate Files",     true)
+    private val excludeSpam     = bool("Exclude Spam",       true)
     private val maxLinesPerFile = int ("Max Lines/File",     50000, 1000, 200000)
     private val autoFlush       = bool("Auto Flush",         true)
     private val flushInterval   = int ("Flush Interval (ms)",5000,  1000, 30000)
 
-    // ── Path ──────────────────────────────────────────────
     private val baseDir by lazy { getLogDirectory() }
-
-    // ── State ─────────────────────────────────────────────
     private val writers = ConcurrentHashMap<String, PrintWriter>()
     private val lineCounts = ConcurrentHashMap<String, Int>()
     private var flushJob: Job? = null
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
     private val writeScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // ── Spam filters ─────────────────────────────────────
     private val spamPackets = setOf(
         "MoveEntityAbsolutePacket",
         "MoveEntityDeltaPacket",
@@ -80,7 +75,6 @@ class PacketCollector : BaseModule(
         val pkt = event.packet
         val className = pkt.javaClass.simpleName
 
-        // Spam filter
         if (excludeSpam.value && spamPackets.contains(className)) return
 
         val dir = if (event.direction == PacketEvent.Direction.CLIENT_TO_SERVER) "CLIENT→SERVER" else "SERVER→CLIENT"
@@ -100,12 +94,7 @@ class PacketCollector : BaseModule(
             }
         }
 
-        // Write to appropriate file
-        val fileName = if (separateFiles.value) {
-            "$className.txt"
-        } else {
-            "packet_log.txt"
-        }
+        val fileName = if (separateFiles.value) "$className.txt" else "packet_log.txt"
         writeToFile(fileName, line)
     }
 
@@ -117,13 +106,10 @@ class PacketCollector : BaseModule(
             }
             writer.println(line)
             val count = lineCounts.merge(fileName, 1, Int::plus) ?: 1
-            if (count % 10 == 0) {
-                writer.flush()
-            }
+            if (count % 10 == 0) writer.flush()
             if (count >= maxLinesPerFile.value) {
                 writer.println("!!! Max lines reached, rotating log !!!")
                 writer.flush()
-                // Close and reopen with a new file (rotate)
                 writer.close()
                 val rotatedName = fileName.replace(".txt", "_${System.currentTimeMillis()}.txt")
                 val newWriter = PrintWriter(FileWriter(File(baseDir, rotatedName), true), true)
@@ -133,7 +119,6 @@ class PacketCollector : BaseModule(
         }
     }
 
-    // ── Detailed packet summariser ──────────────────────
     private fun buildDetailedSummary(pkt: BedrockPacket): String {
         return when (pkt) {
             is MovePlayerPacket -> {
@@ -152,7 +137,7 @@ class PacketCollector : BaseModule(
                 "eid=${pkt.runtimeEntityId} | motion=(${motion.x}, ${motion.y}, ${motion.z})"
             }
             is UpdateAbilitiesPacket -> {
-                "perm=${pkt.playerPermission} | cmd=${pkt.commandPermission} | layers=${pkt.abilityLayers.size} | layers=${pkt.abilityLayers.joinToString { it.layerType.name + ": " + it.abilityValues.joinToString() }}"
+                "perm=${pkt.playerPermission} | cmd=${pkt.commandPermission} | layers=${pkt.abilityLayers.size}"
             }
             is MoveEntityAbsolutePacket -> {
                 val pos = pkt.position
@@ -162,32 +147,30 @@ class PacketCollector : BaseModule(
                 "type=${pkt.type} | message=${pkt.message.take(50)}"
             }
             is LevelChunkPacket -> {
-                "chunkX=${pkt.chunkX} | chunkZ=${pkt.chunkZ} | subChunks=${pkt.subChunksCount}"
+                // Fixed: removed subChunksCount (doesn't exist)
+                "chunkX=${pkt.chunkX} | chunkZ=${pkt.chunkZ}"
             }
             is UpdateBlockPacket -> {
-                "pos=(${pkt.blockPosition.x}, ${pkt.blockPosition.y}, ${pkt.blockPosition.z}) | runtimeId=${pkt.runtimeId} | flags=${pkt.flags}"
+                // Fixed: removed runtimeId (doesn't exist)
+                "pos=(${pkt.blockPosition.x}, ${pkt.blockPosition.y}, ${pkt.blockPosition.z}) | flags=${pkt.flags}"
             }
             is AddEntityPacket -> {
                 "eid=${pkt.runtimeEntityId} | type=${pkt.entityType} | pos=(${pkt.position.x}, ${pkt.position.y}, ${pkt.position.z}) | rot=(${pkt.rotation.x}, ${pkt.rotation.y})"
             }
             is RemoveEntityPacket -> {
-                "eid=${pkt.runtimeEntityId}"
+                // Fixed: use entityId instead of runtimeEntityId
+                "eid=${pkt.entityId}"
             }
             is SetEntityDataPacket -> {
                 "eid=${pkt.runtimeEntityId} | metadata size=${pkt.metadata.size}"
             }
-            else -> {
-                // Generic: print class name only (or some other info if available)
-                ""
-            }
+            else -> ""
         }
     }
 
-    // ── Path helpers ─────────────────────────────────────
     private fun getLogDirectory(): String {
-        val androidBase = "/storage/emulated/0/Download/packet_logs"
         if (File("/storage/emulated/0").exists()) {
-            return androidBase
+            return "/storage/emulated/0/Download/packet_logs"
         }
         val userHome = System.getProperty("user.home")
         return if (System.getProperty("os.name").startsWith("Windows")) {
