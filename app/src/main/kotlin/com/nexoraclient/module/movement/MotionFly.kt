@@ -5,6 +5,7 @@ import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
+import org.cloudburstmc.math.vector.Vector2f
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
@@ -111,7 +112,7 @@ class MotionFly : BaseModule(
         // ── Send motion packet ──────────────────────
         val motionPacket = SetEntityMotionPacket().apply {
             runtimeEntityId = EntityTracker.selfRuntimeId
-            motion = Vector3f.from(motionX, vertSpeed, motionZ)
+            motion = Vector2f.from(motionX, motionZ)
         }
         session.clientBound(motionPacket)
 
