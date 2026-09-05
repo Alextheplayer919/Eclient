@@ -21,7 +21,7 @@ import kotlin.math.*
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura combat + ground‑level orbit"
+    description = "WAura combat + chase/orbit + guaranteed crits"
 ), PacketEventBus.PacketListener {
 
     enum class TargetMode { Single, Switch, Multi }
@@ -36,13 +36,14 @@ class KillAura : BaseModule(
     private val targetMode      = enum("Target Mode",    TargetMode.Single)
     private val switchDelay     = int  ("Switch Delay",  100,  20,   1000)
 
-    // ── Orbit (circle around target) ────────────────────
+    // ── Orbit & Chase ──────────────────────────────────
     private val orbitEnabled    = bool("Orbit",          true)
-    private val orbitRange      = float("Orbit Range",   8f,   2f,   20f)   // circle radius
-    private val orbitSpeed      = float("Orbit Speed",   30f,  5f,   120f)  // degrees per tick
-    private val orbitHorizSpeed = float("Orbit H Speed", 25f,  10f,  60f)   // horizontal movement speed
-    private val orbitVertSpeed  = float("Orbit V Speed", 8f,   2f,   30f)    // vertical movement speed
-    private val orbitHeight     = float("Orbit Height",  0.2f, 0f,  2f)     // height above target's feet
+    private val orbitRange      = float("Orbit Range",   8f,   2f,   20f)      // orbit radius
+    private val orbitChaseDist  = float("Chase Distance",10f,  3f,   30f)      // if target farther than this, chase (don't orbit)
+    private val orbitSpeed      = float("Orbit Speed",   30f,  5f,   120f)     // degrees per tick
+    private val orbitHorizSpeed = float("Orbit H Speed", 25f,  10f,  60f)      // horizontal movement speed
+    private val orbitVertSpeed  = float("Orbit V Speed", 8f,   2f,   30f)      // vertical movement speed
+    private val orbitHeight     = float("Orbit Height",  0.2f, 0f,  2f)        // height above target's feet
 
     // ── Rotation ──────────────────────────────────────
     private val silentRot       = bool("Silent Rotation", true)
@@ -50,15 +51,15 @@ class KillAura : BaseModule(
     private val antiBot         = bool("Anti Bot",        true)
     private val shortcut        = bool("Shortcut",       false)
 
-    // ── Crit ──────────────────────────────────────────
-    private val critMode        = enum("Crit Mode", CritMode.UltraFast)
+    // ── Crit (damage boost) ──────────────────────────
+    private val critMode        = enum("Crit Mode", CritMode.UltraFast)  // always crit if possible
 
     companion object {
         private const val CRIT_LOCK_KEY = "crit-injection"
         private const val TPAURA_CONFLICT_WINDOW_MS = 120L
         private const val TARGET_SCAN_INTERVAL = 50L
-        private const val ORBIT_TOLERANCE = 0.5f  // if within this distance, don't send motion
-        private const val MAX_ATTACK_BOOST = 3     // prevent packet flood
+        private const val ORBIT_TOLERANCE = 0.5f
+        private const val MAX_ATTACK_BOOST = 3
     }
 
     // ── State ──────────────────────────────────────────
@@ -158,7 +159,7 @@ class KillAura : BaseModule(
             EntityTracker.selfPitch = headLockPitch
         }
 
-        // ── Orbit (circle around target, ground level) ──
+        // ── Movement: chase OR orbit ──
         if (orbitEnabled.value) {
             val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
 
@@ -172,34 +173,59 @@ class KillAura : BaseModule(
                 // continue to allow recovery
             }
 
-            // Desired orbit position: circle around target's feet + small height offset
-            orbitAngle += orbitSpeed.value
-            orbitAngle %= 360f
-            val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
-            val targetX = primary.x + cos(rad) * orbitRange.value
-            val targetZ = primary.z + sin(rad) * orbitRange.value
-            val targetY = primary.y + orbitHeight.value   // stay near ground
+            // Distance to target
+            val distToTarget = MathUtil.dist3(selfPos.x, selfPos.y, selfPos.z, primary.x, primary.y, primary.z)
 
-            // If we're already close to target, don't send motion
+            // Decide: chase if too far, else orbit
+            val shouldOrbit = distToTarget <= orbitChaseDist.value
+
+            // Target position for movement
+            val targetX: Float
+            val targetZ: Float
+            val targetY: Float
+
+            if (shouldOrbit) {
+                // Orbit: circle around target
+                orbitAngle += orbitSpeed.value
+                orbitAngle %= 360f
+                val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
+                targetX = primary.x + cos(rad) * orbitRange.value
+                targetZ = primary.z + sin(rad) * orbitRange.value
+                targetY = primary.y + orbitHeight.value
+            } else {
+                // Chase: move directly towards target (no orbit)
+                targetX = primary.x
+                targetZ = primary.z
+                targetY = primary.y + orbitHeight.value
+            }
+
+            // Compute velocity towards target position
             val dirX = targetX - selfPos.x
             val dirZ = targetZ - selfPos.z
             val dirY = targetY - selfPos.y
             val horizDist = sqrt(dirX * dirX + dirZ * dirZ)
+
             if (horizDist > ORBIT_TOLERANCE || abs(dirY) > ORBIT_TOLERANCE) {
                 val speed = orbitHorizSpeed.value / 20f
                 val maxHoriz = sqrt(5.99f)
                 val clampedSpeed = min(speed, maxHoriz)
-                // Normalize horizontal direction
-                val normX = dirX / horizDist
-                val normZ = dirZ / horizDist
-                val motionX = normX * clampedSpeed
-                val motionZ = normZ * clampedSpeed
-                // Vertical speed (gentle)
+
+                // Horizontal motion
+                var motionX = 0f
+                var motionZ = 0f
+                if (horizDist > 0.1f) {
+                    val normX = dirX / horizDist
+                    val normZ = dirZ / horizDist
+                    motionX = normX * clampedSpeed
+                    motionZ = normZ * clampedSpeed
+                }
+
+                // Vertical motion
                 val vertSpeed = when {
                     dirY > 0.2f -> orbitVertSpeed.value / 20f
                     dirY < -0.2f -> -orbitVertSpeed.value / 20f
                     else -> 0f
-                }.coerceIn(-0.5f, 0.5f) // keep vertical movement gentle
+                }.coerceIn(-0.5f, 0.5f)
 
                 val motionPacket = SetEntityMotionPacket()
                 motionPacket.runtimeEntityId = EntityTracker.selfRuntimeId
