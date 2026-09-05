@@ -72,7 +72,7 @@ class MotionFly : BaseModule(
 
         // ── Horizontal speed ──────────────────────────
         var horizSpeed = hSpeedBPS.value / 20f
-        val maxHoriz = sqrt(5.99)  // <-- FIXED: removed 'f' so it's Double → Float conversion happens later
+        val maxHoriz = sqrt(5.99)  // Double
         horizSpeed = min(horizSpeed, maxHoriz.toFloat())
 
         if (wantUp) horizSpeed *= upHFactor.value
@@ -92,11 +92,9 @@ class MotionFly : BaseModule(
         val sinYaw = sin(yawRad.toDouble()).toFloat()
         val cosYaw = cos(yawRad.toDouble()).toFloat()
 
-        // Forward/strafe relative to yaw
         val forward = inputZ
         val strafe = inputX
 
-        // Compute motion vector
         var motionX = strafe * cosYaw - forward * sinYaw
         var motionZ = forward * cosYaw + strafe * sinYaw
 
