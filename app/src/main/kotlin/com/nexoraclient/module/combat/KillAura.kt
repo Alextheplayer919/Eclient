@@ -13,15 +13,15 @@ import com.rubidiumclient.utils.RotationUtil
 import kotlinx.coroutines.*
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData
-import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
+import org.cloudburstmc.protocol.bedrock.packet.SetEntityMotionPacket
 import kotlin.random.Random
 import kotlin.math.*
 
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura-based combat with silent aim + orbit"
+    description = "WAura combat + LeHu motion orbit"
 ), PacketEventBus.PacketListener {
 
     enum class TargetMode { Single, Switch, Multi }
@@ -36,17 +36,18 @@ class KillAura : BaseModule(
     private val targetMode      = enum("Target Mode",    TargetMode.Single)
     private val switchDelay     = int  ("Switch Delay",  100,  20,   1000)
 
-    // ── Orbit & rotation ──────────────────────────────
+    // ── Orbit (LeHu motion) ────────────────────────────
     private val orbitEnabled    = bool("Orbit",          true)
-    private val orbitRange      = float("Orbit Range",   4.5f,  1f,   12f)
-    private val orbitSpeed      = float("Orbit Speed",   30f,   5f,   120f)
-    private val silentRot       = bool("Silent Rotation", true)   // server‑only lock
-    private val osuRots         = bool("Osu Rots",       false)
+    private val orbitRange      = float("Orbit Range",   8f,   2f,   20f)   // wide distance
+    private val orbitSpeed      = float("Orbit Speed",   30f,  5f,   120f)  // degrees per tick
+    private val orbitHorizSpeed = float("Orbit H Speed", 46f,  10f,  100f)  // horizontal speed for orbit
+    private val orbitVertSpeed  = float("Orbit V Speed", 20f,  5f,   60f)   // vertical speed for orbit
+
+    // ── Rotation ──────────────────────────────────────
+    private val silentRot       = bool("Silent Rotation", true)
     private val ignoreFriends   = bool("Ignore Friends",  true)
     private val antiBot         = bool("Anti Bot",        true)
-
-    // ── Shortcut (floating button) ────────────────────
-    private val shortcut        = bool("Shortcut",       false)   // appears in shortcut bar
+    private val shortcut        = bool("Shortcut",       false)
 
     // ── Crit ──────────────────────────────────────────
     private val critMode        = enum("Crit Mode", CritMode.UltraFast)
@@ -54,10 +55,11 @@ class KillAura : BaseModule(
     companion object {
         private const val CRIT_LOCK_KEY = "crit-injection"
         private const val TPAURA_CONFLICT_WINDOW_MS = 120L
+        private const val TARGET_SCAN_INTERVAL = 50L
     }
 
     // ── State ──────────────────────────────────────────
-    @Volatile private var lastAttackNs   = 0L
+    @Volatile private var lastAttackMs   = 0L
     @Volatile private var lastSwitchMs   = 0L
     @Volatile private var switchIndex    = 0
     @Volatile private var currentTarget: EntityTracker.TrackedEntity? = null
@@ -66,13 +68,13 @@ class KillAura : BaseModule(
     @Volatile private var headLockYaw    = 0f
     @Volatile private var headLockPitch  = 0f
     @Volatile private var orbitAngle     = 0f
-    @Volatile private var lastOrbitMoveMs = 0L
+    private var lastOrbitPos = Vector3f.ZERO
 
     private var tickJob: Job? = null
 
     override fun onEnable() {
         super.onEnable()
-        lastAttackNs   = 0L
+        lastAttackMs   = 0L
         lastSwitchMs   = 0L
         switchIndex    = 0
         currentTarget  = null
@@ -81,7 +83,7 @@ class KillAura : BaseModule(
         headLockYaw    = EntityTracker.selfYaw
         headLockPitch  = EntityTracker.selfPitch
         orbitAngle     = Random.nextFloat() * 360f
-        lastOrbitMoveMs = 0L
+        lastOrbitPos   = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -92,20 +94,25 @@ class KillAura : BaseModule(
         super.onDisable()
     }
 
+    private suspend fun tickLoop() {
+        while (currentCoroutineContext().isActive) {
+            if (isEnabled) {
+                if (System.currentTimeMillis() - lastScanMs >= TARGET_SCAN_INTERVAL) {
+                    cachedTargets = selectTargets()
+                    lastScanMs = System.currentTimeMillis()
+                }
+            }
+            delay(20L)
+        }
+    }
+
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
         if (event.direction != PacketEvent.Direction.CLIENT_TO_SERVER) return
         val pkt = event.packet as? PlayerAuthInputPacket ?: return
 
         val session = event.session
-        val nowNs = System.nanoTime()
         val nowMs = System.currentTimeMillis()
-
-        // ── Update targets ──────────────────────────────
-        if (nowMs - lastScanMs >= 50L) {
-            cachedTargets = selectTargets()
-            lastScanMs = nowMs
-        }
 
         if (cachedTargets.isEmpty()) {
             currentTarget = null
@@ -113,7 +120,7 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Select current target ────────────────────────
+        // ── Select current target ──
         val target = when (targetMode.value) {
             TargetMode.Single -> {
                 if (currentTarget == null || !cachedTargets.contains(currentTarget)) {
@@ -133,87 +140,86 @@ class KillAura : BaseModule(
         }
 
         val primary = target ?: cachedTargets.firstOrNull()
+        if (primary == null) {
+            event.cancelAndReplace(pkt)
+            return
+        }
 
-        // ── Silent rotation ──────────────────────────────
-        if (primary != null) {
-            val rot = RotationUtil.toEntity(primary)
-            var targetYaw = rot.yaw
-            if (osuRots.value) {
-                val snap = 36.4f
-                targetYaw = round(targetYaw / snap) * snap
+        // ── Silent rotation ──
+        val rot = RotationUtil.toEntity(primary)
+        headLockYaw   = rot.yaw
+        headLockPitch = rot.pitch
+        pkt.rotation  = Vector3f.from(headLockPitch, headLockYaw, headLockYaw)
+        if (!silentRot.value) {
+            EntityTracker.selfYaw   = headLockYaw
+            EntityTracker.selfPitch = headLockPitch
+        }
+
+        // ── Orbit using LeHu motion (SetEntityMotionPacket) ──
+        if (orbitEnabled.value) {
+            val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
+
+            // Anti‑rubberband distance check (LeHu style)
+            val dx = selfPos.x - lastOrbitPos.x
+            val dy = selfPos.y - lastOrbitPos.y
+            val dz = selfPos.z - lastOrbitPos.z
+            val dist = sqrt(dx * dx + dy * dy + dz * dz)
+            if (dist > 4.5f) {
+                lastOrbitPos = selfPos
+                // still allow attack
             }
-            headLockYaw   = targetYaw
-            headLockPitch = rot.pitch
-            pkt.rotation  = Vector3f.from(headLockPitch, headLockYaw, headLockYaw)
-            if (!silentRot.value) {
-                EntityTracker.selfYaw   = headLockYaw
-                EntityTracker.selfPitch = headLockPitch
+
+            // Compute desired orbit position
+            orbitAngle += orbitSpeed.value
+            orbitAngle %= 360f
+            val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
+            val targetX = primary.x + cos(rad) * orbitRange.value
+            val targetZ = primary.z + sin(rad) * orbitRange.value
+            val targetY = primary.y + orbitRange.value * 0.5f // keep at half height
+
+            // Compute velocity needed to move toward target position (LeHu style)
+            val dirX = targetX - selfPos.x
+            val dirZ = targetZ - selfPos.z
+            val dirY = targetY - selfPos.y
+            val horizDist = sqrt(dirX * dirX + dirZ * dirZ)
+            if (horizDist > 0.1f) {
+                val speed = orbitHorizSpeed.value / 20f
+                val maxHoriz = sqrt(5.99f)
+                val clampedSpeed = min(speed, maxHoriz)
+                // Normalize horizontal direction
+                val normX = dirX / horizDist
+                val normZ = dirZ / horizDist
+                val motionX = normX * clampedSpeed
+                val motionZ = normZ * clampedSpeed
+                // Vertical: use orbitVertSpeed
+                val vertSpeed = when {
+                    dirY > 0.1f -> orbitVertSpeed.value / 20f
+                    dirY < -0.1f -> -orbitVertSpeed.value / 20f
+                    else -> 0f
+                }.coerceIn(-1f, 1f)
+
+                val motionPacket = SetEntityMotionPacket()
+                motionPacket.runtimeEntityId = EntityTracker.selfRuntimeId
+                motionPacket.motion = Vector3f.from(motionX, vertSpeed, motionZ)
+                session.clientBound(motionPacket)
+
+                // Update last orbit position to current (so next check sees smooth movement)
+                lastOrbitPos = selfPos
             }
         }
 
-        // ── Orbit movement ──────────────────────────────
-        if (orbitEnabled.value && primary != null) {
-            val nowMove = System.currentTimeMillis()
-            if (nowMove - lastOrbitMoveMs >= 20L) {
-                lastOrbitMoveMs = nowMove
-                orbitAngle += orbitSpeed.value
-                orbitAngle %= 360f
-                val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
-                val dx = sin(rad) * orbitRange.value
-                val dz = cos(rad) * orbitRange.value
-                val targetPos = Vector3f.from(
-                    primary.x + dx,
-                    primary.y + orbitRange.value * 0.5f,
-                    primary.z + dz
-                )
-                val curPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
-                val step = 0.5f
-                val delta = targetPos.sub(curPos)
-                val dist = delta.length()
-                val newPos = if (dist > step) {
-                    curPos.add(delta.mul(step / dist))
-                } else {
-                    targetPos
-                }
-                try {
-                    val movePacket = MovePlayerPacket().apply {
-                        runtimeEntityId = EntityTracker.selfRuntimeId
-                        position = newPos
-                        rotation = pkt.rotation
-                        mode = MovePlayerPacket.Mode.NORMAL
-                        isOnGround = false
-                        ridingRuntimeEntityId = 0L
-                    }
-                    session.serverBound(movePacket)
-                    session.clientBound(movePacket)
-                    TPAura.notifyExternalPositionOverride()
-                    EntityTracker.selfX = newPos.x
-                    EntityTracker.selfY = newPos.y
-                    EntityTracker.selfZ = newPos.z
-                } catch (_: Exception) {}
-            }
-        }
-
-        // ── Attack logic (WAura style) ─────────────────
-        val attackDelay = 1_000_000_000L / cps.value
-        if (nowNs - lastAttackNs < attackDelay) {
+        // ── Attack logic (WAura) ──
+        val attackDelay = 1000L / cps.value
+        if (nowMs - lastAttackMs < attackDelay) {
             event.cancelAndReplace(pkt)
             return
         }
 
         val targetsToHit = when (targetMode.value) {
-            TargetMode.Single, TargetMode.Switch -> {
-                if (primary != null) listOf(primary) else emptyList()
-            }
+            TargetMode.Single, TargetMode.Switch -> listOf(primary)
             TargetMode.Multi -> cachedTargets
         }
 
-        if (targetsToHit.isEmpty()) {
-            event.cancelAndReplace(pkt)
-            return
-        }
-
-        // Range check
         val sx = EntityTracker.selfX
         val sy = EntityTracker.selfY
         val sz = EntityTracker.selfZ
@@ -266,7 +272,7 @@ class KillAura : BaseModule(
             }
         }
 
-        lastAttackNs = nowNs
+        lastAttackMs = nowMs
         event.cancelAndReplace(pkt)
     }
 
@@ -285,12 +291,6 @@ class KillAura : BaseModule(
         delay(5L)
     }
 
-    private suspend fun tickLoop() {
-        while (currentCoroutineContext().isActive) {
-            if (isEnabled) delay(20L)
-        }
-    }
-
     private fun selectTargets(): List<EntityTracker.TrackedEntity> {
         val sx = EntityTracker.selfX
         val sy = EntityTracker.selfY
@@ -307,7 +307,6 @@ class KillAura : BaseModule(
 
     private fun isTarget(entity: EntityTracker.TrackedEntity): Boolean {
         val isPlayer = entity.isPlayer
-        // WAura logic
         return when {
             playersOnly.value && mobsOnly.value -> false
             playersOnly.value && !isPlayer -> false
