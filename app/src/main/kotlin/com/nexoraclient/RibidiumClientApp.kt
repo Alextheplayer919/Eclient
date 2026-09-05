@@ -14,9 +14,8 @@ import com.rubidiumclient.config.ServerConfig
 import com.rubidiumclient.core.relay.Definitions
 import com.rubidiumclient.module.ModuleManager
 import com.rubidiumclient.module.social.FriendManager
-
-// Keep all imports – they are used elsewhere (like for types), but we no longer need to import module classes here
-// You can remove them if you want, but they don't hurt.
+import com.rubidiumclient.utils.ItemIconProvider      // <-- ADDED
+import com.rubidiumclient.utils.WorldBlockTracker   // <-- ADDED
 
 class RubidiumClientApp : Application() {
 
@@ -49,10 +48,11 @@ class RubidiumClientApp : Application() {
             start()
         }
 
-        WorldBlockTracker.init()
-        ItemIconProvider.init(applicationContext)
+        WorldBlockTracker.init()    // <-- now resolved
+        ItemIconProvider.init(applicationContext)  // <-- now resolved
+
         // Module registration is now handled inside ModuleManager.init
-        // registerModules() is removed
+        // No need to call registerModules() here.
     }
 
     private fun installCrashLogger() {
