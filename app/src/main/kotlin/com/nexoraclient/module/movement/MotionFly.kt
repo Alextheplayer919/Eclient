@@ -72,8 +72,8 @@ class MotionFly : BaseModule(
 
         // ── Horizontal speed ──────────────────────────
         var horizSpeed = hSpeedBPS.value / 20f
-        val maxHoriz = sqrt(5.99f)  // ~2.447
-        horizSpeed = min(horizSpeed, maxHoriz)
+        val maxHoriz = sqrt(5.99)  // <-- FIXED: removed 'f' so it's Double → Float conversion happens later
+        horizSpeed = min(horizSpeed, maxHoriz.toFloat())
 
         if (wantUp) horizSpeed *= upHFactor.value
         if (wantDown) horizSpeed *= downHFactor.value
@@ -88,9 +88,9 @@ class MotionFly : BaseModule(
         // ── Input rotation ──────────────────────────
         val inputX = pkt.motion.x
         val inputZ = pkt.motion.y
-        val yawRad = Math.toRadians(pkt.rotation.y.toDouble())
-        val sinYaw = sin(yawRad)
-        val cosYaw = cos(yawRad)
+        val yawRad = Math.toRadians(pkt.rotation.y.toDouble()).toFloat()
+        val sinYaw = sin(yawRad.toDouble()).toFloat()
+        val cosYaw = cos(yawRad.toDouble()).toFloat()
 
         // Forward/strafe relative to yaw
         val forward = inputZ
@@ -101,7 +101,7 @@ class MotionFly : BaseModule(
         var motionZ = forward * cosYaw + strafe * sinYaw
 
         // Normalize and scale
-        val len = sqrt(motionX * motionX + motionZ * motionZ)
+        val len = sqrt(motionX.toDouble() * motionX.toDouble() + motionZ.toDouble() * motionZ.toDouble()).toFloat()
         if (len > 0.001f) {
             motionX = motionX / len * horizSpeed
             motionZ = motionZ / len * horizSpeed
