@@ -51,6 +51,7 @@ import com.rubidiumclient.module.misc.ChatSpammer
 import com.rubidiumclient.module.misc.ComboShortcut
 import com.rubidiumclient.module.misc.CommandHelper
 import com.rubidiumclient.module.misc.AutoDisconnect
+import com.rubidiumclient.module.misc.PacketCollector   // <-- ADDED IMPORT
 import com.rubidiumclient.module.misc.Performance
 import com.rubidiumclient.module.misc.PopCounter
 import com.rubidiumclient.module.misc.ShulkerDupe
@@ -250,7 +251,8 @@ class RubidiumClientApp : Application() {
             ComboShortcut(2),
             AutoDisconnect(),
             Performance(),
-            CommandHelper()
+            CommandHelper(),
+            PacketCollector()   // <-- ADDED HERE (under MISC)
         )
     }
 }
