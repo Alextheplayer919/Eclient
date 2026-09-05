@@ -21,7 +21,7 @@ import kotlin.math.*
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura combat + chase/orbit + guaranteed crits"
+    description = "WAura combat + random-direction orbit + guaranteed crits"
 ), PacketEventBus.PacketListener {
 
     enum class TargetMode { Single, Switch, Multi }
@@ -32,18 +32,20 @@ class KillAura : BaseModule(
     private val mobsOnly        = bool("Mobs Only",      false)
     private val range           = float("Range",         50f,  2f,   50f)
     private val cps             = int  ("CPS",           25,   1,    50)
-    private val boost           = int  ("Packets per hit", 2, 1,    5)   // capped internally
+    private val boost           = int  ("Packets per hit", 2, 1,    5)
     private val targetMode      = enum("Target Mode",    TargetMode.Single)
     private val switchDelay     = int  ("Switch Delay",  100,  20,   1000)
 
     // ── Orbit & Chase ──────────────────────────────────
-    private val orbitEnabled    = bool("Orbit",          true)
-    private val orbitRange      = float("Orbit Range",   8f,   2f,   20f)      // orbit radius
-    private val orbitChaseDist  = float("Chase Distance",10f,  3f,   30f)      // if target farther than this, chase (don't orbit)
-    private val orbitSpeed      = float("Orbit Speed",   30f,  5f,   120f)     // degrees per tick
-    private val orbitHorizSpeed = float("Orbit H Speed", 25f,  10f,  60f)      // horizontal movement speed
-    private val orbitVertSpeed  = float("Orbit V Speed", 8f,   2f,   30f)      // vertical movement speed
-    private val orbitHeight     = float("Orbit Height",  0.2f, 0f,  2f)        // height above target's feet
+    private val orbitEnabled        = bool("Orbit",          true)
+    private val orbitRange          = float("Orbit Range",   8f,   2f,   20f)
+    private val orbitChaseDist      = float("Chase Distance",10f,  3f,   30f)
+    private val orbitSpeed          = float("Orbit Speed",   30f,  5f,   120f)
+    private val orbitHorizSpeed     = float("Orbit H Speed", 25f,  10f,  60f)
+    private val orbitVertSpeed      = float("Orbit V Speed", 8f,   2f,   30f)
+    private val orbitHeight         = float("Orbit Height",  0.2f, 0f,  2f)
+    private val orbitRandomDir      = bool("Random Direction", false)      // new: random direction switching
+    private val orbitSwitchInterval = int("Switch Interval (s)", 3, 1, 10) // seconds between direction flips
 
     // ── Rotation ──────────────────────────────────────
     private val silentRot       = bool("Silent Rotation", true)
@@ -51,8 +53,8 @@ class KillAura : BaseModule(
     private val antiBot         = bool("Anti Bot",        true)
     private val shortcut        = bool("Shortcut",       false)
 
-    // ── Crit (damage boost) ──────────────────────────
-    private val critMode        = enum("Crit Mode", CritMode.UltraFast)  // always crit if possible
+    // ── Crit ──────────────────────────────────────────
+    private val critMode        = enum("Crit Mode", CritMode.UltraFast)
 
     companion object {
         private const val CRIT_LOCK_KEY = "crit-injection"
@@ -73,6 +75,8 @@ class KillAura : BaseModule(
     @Volatile private var headLockPitch  = 0f
     @Volatile private var orbitAngle     = 0f
     private var lastOrbitPos = Vector3f.ZERO
+    private var orbitDirection = 1f                     // 1 = clockwise, -1 = counterclockwise
+    private var lastDirSwitchMs = 0L
 
     private var tickJob: Job? = null
 
@@ -88,6 +92,8 @@ class KillAura : BaseModule(
         headLockPitch  = EntityTracker.selfPitch
         orbitAngle     = Random.nextFloat() * 360f
         lastOrbitPos   = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
+        orbitDirection = if (Random.nextBoolean()) 1f else -1f
+        lastDirSwitchMs = System.currentTimeMillis()
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -179,6 +185,14 @@ class KillAura : BaseModule(
             // Decide: chase if too far, else orbit
             val shouldOrbit = distToTarget <= orbitChaseDist.value
 
+            // ── Random direction switching ──
+            if (orbitRandomDir.value) {
+                if (nowMs - lastDirSwitchMs >= orbitSwitchInterval.value * 1000L) {
+                    orbitDirection = -orbitDirection  // flip direction
+                    lastDirSwitchMs = nowMs
+                }
+            }
+
             // Target position for movement
             val targetX: Float
             val targetZ: Float
@@ -186,7 +200,7 @@ class KillAura : BaseModule(
 
             if (shouldOrbit) {
                 // Orbit: circle around target
-                orbitAngle += orbitSpeed.value
+                orbitAngle += orbitSpeed.value * orbitDirection
                 orbitAngle %= 360f
                 val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
                 targetX = primary.x + cos(rad) * orbitRange.value
