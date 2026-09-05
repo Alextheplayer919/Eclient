@@ -166,7 +166,7 @@ class AnchorAura : BaseModule(
         val tz = floor(target.z).toInt()
         
         // Scan a 5x5x5 region around target, prioritize closer positions
-        val candidates = mutableListOf<Triple<Vector3i, Float>>()
+        val candidates = mutableListOf<Pair<Vector3i, Float>>()
         
         for (dy in -2..2) {
             for (dx in -2..2) {
@@ -196,7 +196,7 @@ class AnchorAura : BaseModule(
                     val neighbor = PlacementUtil.findClickableNeighbor(px, py, pz)
                     if (neighbor == null && !forceMode.value) continue
                     
-                    candidates.add(Triple(Vector3i.from(px, py, pz), dist))
+                    candidates.add(Pair(Vector3i.from(px, py, pz), dist))
                 }
             }
         }
