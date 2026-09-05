@@ -26,6 +26,9 @@ class MotionFly : BaseModule(
     private val upHFactor     = float("Up H Factor",     0.55f, 0.1f, 1.0f)
     private val downHFactor   = float("Down H Factor",   0.55f, 0.1f, 1.0f)
 
+    // ── Shortcut ──────────────────────────────────────
+    private val shortcut      = bool("Shortcut",         false)   // appears in floating shortcut bar
+
     // ── State ──────────────────────────────────────────
     private var lastPos = Vector3f.ZERO
 
