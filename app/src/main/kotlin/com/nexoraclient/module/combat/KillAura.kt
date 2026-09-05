@@ -21,7 +21,7 @@ import kotlin.math.*
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura combat + random-direction orbit + guaranteed crits"
+    description = "WAura combat + smooth random-direction orbit + guaranteed crits"
 ), PacketEventBus.PacketListener {
 
     enum class TargetMode { Single, Switch, Multi }
@@ -44,8 +44,10 @@ class KillAura : BaseModule(
     private val orbitHorizSpeed     = float("Orbit H Speed", 25f,  10f,  60f)
     private val orbitVertSpeed      = float("Orbit V Speed", 8f,   2f,   30f)
     private val orbitHeight         = float("Orbit Height",  0.2f, 0f,  2f)
-    private val orbitRandomDir      = bool("Random Direction", false)      // new: random direction switching
-    private val orbitSwitchInterval = int("Switch Interval (s)", 3, 1, 10) // seconds between direction flips
+    private val orbitRandomDir      = bool("Random Direction", false)
+    private val orbitSwitchInterval = int("Switch Interval (s)", 3, 1, 10)
+    private val orbitSmoothTrans    = bool("Smooth Transition", true)          // new: gradual decel/accel
+    private val orbitTransDuration  = float("Transition Time (s)", 0.5f, 0.1f, 2.0f)
 
     // ── Rotation ──────────────────────────────────────
     private val silentRot       = bool("Silent Rotation", true)
@@ -77,6 +79,9 @@ class KillAura : BaseModule(
     private var lastOrbitPos = Vector3f.ZERO
     private var orbitDirection = 1f                     // 1 = clockwise, -1 = counterclockwise
     private var lastDirSwitchMs = 0L
+    private var orbitTransitionActive = false           // true during smooth direction change
+    private var orbitTransitionStartTime = 0L
+    private var orbitTransitionTargetDir = 1f
 
     private var tickJob: Job? = null
 
@@ -94,6 +99,7 @@ class KillAura : BaseModule(
         lastOrbitPos   = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         orbitDirection = if (Random.nextBoolean()) 1f else -1f
         lastDirSwitchMs = System.currentTimeMillis()
+        orbitTransitionActive = false
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -185,11 +191,35 @@ class KillAura : BaseModule(
             // Decide: chase if too far, else orbit
             val shouldOrbit = distToTarget <= orbitChaseDist.value
 
-            // ── Random direction switching ──
+            // ── Random direction switching with smooth transition ──
             if (orbitRandomDir.value) {
-                if (nowMs - lastDirSwitchMs >= orbitSwitchInterval.value * 1000L) {
-                    orbitDirection = -orbitDirection  // flip direction
-                    lastDirSwitchMs = nowMs
+                if (!orbitTransitionActive && nowMs - lastDirSwitchMs >= orbitSwitchInterval.value * 1000L) {
+                    if (orbitSmoothTrans.value) {
+                        // Start smooth transition
+                        orbitTransitionActive = true
+                        orbitTransitionStartTime = nowMs
+                        orbitTransitionTargetDir = -orbitDirection  // target direction
+                        lastDirSwitchMs = nowMs  // prevent re-trigger
+                    } else {
+                        // Instant flip (old behavior)
+                        orbitDirection = -orbitDirection
+                        lastDirSwitchMs = nowMs
+                    }
+                }
+            }
+
+            // Determine effective direction and speed multiplier
+            var effectiveDirection = orbitDirection
+            if (orbitTransitionActive) {
+                val elapsed = (nowMs - orbitTransitionStartTime) / 1000.0f
+                val progress = (elapsed / orbitTransDuration.value).coerceIn(0f, 1f)
+                // multiplier goes from 1 to -1 linearly
+                val multiplier = 1 - 2 * progress
+                effectiveDirection = orbitDirection * multiplier
+                if (progress >= 1f) {
+                    orbitTransitionActive = false
+                    orbitDirection = orbitTransitionTargetDir
+                    effectiveDirection = orbitDirection
                 }
             }
 
@@ -199,8 +229,8 @@ class KillAura : BaseModule(
             val targetY: Float
 
             if (shouldOrbit) {
-                // Orbit: circle around target
-                orbitAngle += orbitSpeed.value * orbitDirection
+                // Orbit: circle around target with effective direction
+                orbitAngle += orbitSpeed.value * effectiveDirection
                 orbitAngle %= 360f
                 val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
                 targetX = primary.x + cos(rad) * orbitRange.value
