@@ -147,17 +147,19 @@ class PacketCollector : BaseModule(
                 "type=${pkt.type} | message=${pkt.message.take(50)}"
             }
             is LevelChunkPacket -> {
+                // ✅ safe: chunkX and chunkZ exist
                 "chunkX=${pkt.chunkX} | chunkZ=${pkt.chunkZ}"
             }
             is UpdateBlockPacket -> {
+                // ✅ safe: blockPosition and flags exist
                 "pos=(${pkt.blockPosition.x}, ${pkt.blockPosition.y}, ${pkt.blockPosition.z}) | flags=${pkt.flags}"
             }
             is AddEntityPacket -> {
                 "eid=${pkt.runtimeEntityId} | type=${pkt.entityType} | pos=(${pkt.position.x}, ${pkt.position.y}, ${pkt.position.z}) | rot=(${pkt.rotation.x}, ${pkt.rotation.y})"
             }
             is RemoveEntityPacket -> {
-                // ✅ FIXED: use runtimeEntityId (not entityId)
-                "eid=${pkt.runtimeEntityId}"
+                // FIX: RemoveEntityPacket exposes uniqueEntityId, not runtimeEntityId
+                "eid=${pkt.uniqueEntityId}"
             }
             is SetEntityDataPacket -> {
                 "eid=${pkt.runtimeEntityId} | metadata size=${pkt.metadata.size}"
