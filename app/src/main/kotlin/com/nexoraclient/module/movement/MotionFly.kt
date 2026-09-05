@@ -23,46 +23,37 @@ import kotlin.math.sin
 class MotionFly : BaseModule(
     name        = "MotionFly",
     category    = ModuleCategory.MOVEMENT,
-    description = "High‑speed anarchy fly with motion sync"
+    description = "Smooth anarchy fly with per‑tick capping"
 ) {
 
     enum class FlyMode {
-        Motion,   // SetEntityMotion – best for high speeds (up to 30+)
-        Vanilla,  // MovePlayerPacket + ground spoof – good for bypass
+        Motion,   // SetEntityMotion – fast, sometimes patched
+        Vanilla,  // MovePlayerPacket with ground spoof – best bypass
         Packet,   // Pure MovePlayerPacket + abilities
         Elytra    // Glide simulation
     }
 
-    // ── Original settings ──────────────────────────────────
-    private val horizontalSpeed = float("Horizontal Speed", 3.5f, 0.1f, 30.0f)   // allow up to 30
-    private val verticalSpeed   = float("Vertical Speed",   1.5f, 0.1f, 20.0f)
-    private val glideSpeed      = float("Glide Speed",      0.1f, -0.01f, 1.0f)
-    private val motionInterval  = float("Delay",            30.0f, 5.0f, 100.0f)
-    private val shortcut        = bool ("Shortcut",         false)
-    private val antiRubberband    = bool ("Anti Rubber-band", true)
-    private val rubberbandMaxStep = float("Max Step",         0.9f, 0.3f, 2.0f)
-    private val rubberbandDelayMs = int  ("Step Delay (ms)",  12,   2,   40)
-
-    // ── New anarchy bypass settings ──────────────────────
-    private val flyMode         = enum("Fly Mode",         FlyMode.Motion)     // default Motion for high speed
+    // ── Settings ──────────────────────────────────────
+    private val flyMode         = enum("Fly Mode",         FlyMode.Vanilla)
+    private val horizontalSpeed = float("Horizontal",      1.5f,  0.1f,  10.0f)
+    private val verticalSpeed   = float("Vertical",        0.6f,  0.1f,  5.0f)
+    private val glideSpeed      = float("Glide Speed",     0.05f, -0.5f, 0.5f)
     private val bypassMode      = bool ("Lifeboat Bypass", true)
+    private val motionInterval  = float("Delay",           30.0f, 5.0f,  100.0f)
     private val antiKick        = bool ("Anti-Kick",       true)
     private val antiKickInterval = int ("Anti-Kick Interval", 3500, 1000, 8000)
-    private val jitter          = float("Jitter",          0.02f, 0f, 0.2f)
+    private val jitter          = float("Jitter",          0.02f, 0f,   0.2f)
     private val grimMode        = bool ("Grim Mode",       false)
-    private val grimSpeed       = float("Grim Speed",       0.25f, 0.05f, 1.0f)
-
-    // ── Timer multiplier (new) – speeds up ticks without changing per‑packet delta ──
-    private val timerMultiplier = float("Timer Multiplier", 1.0f, 0.5f, 5.0f)
+    private val grimSpeed       = float("Grim Speed",      0.25f, 0.05f, 1.0f)
+    private val maxStep         = float("Max Step",        0.3f,  0.05f, 1.0f)   // KEY: caps movement per tick
+    private val timerMultiplier = float("Timer Multiplier",1.0f,  0.5f,  5.0f)
 
     // ── State ──────────────────────────────────────────
-    @Volatile private var lastMotionTime = 0L
-    @Volatile private var jitterState    = false
-    @Volatile private var canFly         = false
-    @Volatile private var lastSession    : RubidiumRelaySession? = null
+    @Volatile private var lastMoveTime = 0L
+    @Volatile private var jitterState = false
+    @Volatile private var canFly = false
     @Volatile private var lastAntiKickTime = 0L
-    @Volatile private var jitterSeed     = 0.0
-    @Volatile private var grimTicks      = 0
+    @Volatile private var jitterSeed = 0.0
 
     private val rubberbandGuard = RubberbandGuard(scope)
 
@@ -121,27 +112,24 @@ class MotionFly : BaseModule(
 
     override fun onEnable() {
         super.onEnable()
-        lastMotionTime = 0L
+        lastMoveTime = 0L
         jitterState = false
         canFly = false
         lastAntiKickTime = 0L
         jitterSeed = kotlin.random.Random.nextDouble(0.0, 2.0 * Math.PI)
-        grimTicks = 0
         rubberbandGuard.reset()
     }
 
     override fun onDisable() {
         super.onDisable()
-        lastSession?.let { applyFlyAbilities(false, it) }
+        PacketEventBus.currentSession?.let { applyFlyAbilities(false, it) }
     }
 
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
-        val pkt = event.packet
-        if (pkt !is PlayerAuthInputPacket) return
+        val pkt = event.packet as? PlayerAuthInputPacket ?: return
         if (event.direction != PacketEvent.Direction.CLIENT_TO_SERVER) return
 
-        lastSession = event.session
         val session = event.session
         val now = System.currentTimeMillis()
 
@@ -150,10 +138,10 @@ class MotionFly : BaseModule(
             applyFlyAbilities(true, session)
         }
 
-        // Original rubberband guard
-        rubberbandGuard.guard(event, pkt, antiRubberband.value, rubberbandMaxStep.value, rubberbandDelayMs.value.toLong())
+        // Rubberband guard (original)
+        rubberbandGuard.guard(event, pkt, true, maxStep.value, 20L)
 
-        // Anti-kick (not needed for Vanilla mode)
+        // Anti-kick
         if (antiKick.value && flyMode.value != FlyMode.Vanilla) {
             if (now - lastAntiKickTime >= antiKickInterval.value) {
                 lastAntiKickTime = now
@@ -166,12 +154,12 @@ class MotionFly : BaseModule(
             }
         }
 
-        // Rate limit (multiplied by timer to speed up ticks)
+        // Rate limit (multiplied by timer)
         val effectiveDelay = motionInterval.value / timerMultiplier.value
-        if (now - lastMotionTime < effectiveDelay) return
-        lastMotionTime = now
+        if (now - lastMoveTime < effectiveDelay) return
+        lastMoveTime = now
 
-        // ── Speed calculation ──────────────────────────────
+        // ── Speed ──────────────────────────────────────
         val effHoriz = if (grimMode.value) grimSpeed.value else horizontalSpeed.value
         val effVert  = if (grimMode.value) grimSpeed.value * 0.5f else verticalSpeed.value
 
@@ -192,7 +180,7 @@ class MotionFly : BaseModule(
         val jx = (sin(jitterSeed) * jitter.value).toFloat()
         val jz = (cos(jitterSeed + 1.0) * jitter.value).toFloat()
 
-        // Vertical
+        // Vertical with Lifeboat bypass
         val vertical = when {
             wantUp -> effVert
             wantDown -> -effVert
@@ -208,82 +196,72 @@ class MotionFly : BaseModule(
         val moveZ = forward * cosYaw + strafe * sinYaw + jz
         val moveY = vertical
 
-        // ── Execute by mode ──────────────────────────
+        // ── 🔥 CRITICAL FIX: Cap per‑tick movement ──
+        val cap = maxStep.value
+        val cappedX = moveX.coerceIn(-cap, cap)
+        val cappedY = moveY.coerceIn(-cap, cap)
+        val cappedZ = moveZ.coerceIn(-cap, cap)
+
+        // ── Apply mode with capped movement ──────────
         when (flyMode.value) {
             FlyMode.Vanilla -> {
-                val newX = sx + moveX
-                val newY = sy + moveY
-                val newZ = sz + moveZ
+                val newX = sx + cappedX
+                val newY = sy + cappedY
+                val newZ = sz + cappedZ
                 sendPosition(session, Vector3f.from(newX, newY, newZ), pkt.rotation, onGround = true)
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
-                // 🔥 CRITICAL FIX: sync motion with the packet so server doesn't rubberband
-                pkt.motion = Vector2f.from(moveX, moveZ)
+                // Sync motion so server doesn't desync
+                pkt.motion = Vector2f.from(cappedX, cappedZ)
             }
 
             FlyMode.Motion -> {
                 val motionPacket = SetEntityMotionPacket().apply {
                     runtimeEntityId = EntityTracker.selfRuntimeId
                     motion = Vector3f.from(
-                        moveX,
-                        moveY + if (jitterState) 0.03f else -0.03f,
-                        moveZ
+                        cappedX,
+                        cappedY + if (jitterState) 0.03f else -0.03f,
+                        cappedZ
                     )
                 }
                 session.clientBound(motionPacket)
                 jitterState = !jitterState
 
-                // Small position update for tracker sync
-                val newX = sx + moveX * 0.1f
-                val newY = sy + moveY * 0.1f
-                val newZ = sz + moveZ * 0.1f
+                // Small position update
+                val newX = sx + cappedX * 0.1f
+                val newY = sy + cappedY * 0.1f
+                val newZ = sz + cappedZ * 0.1f
                 sendPosition(session, Vector3f.from(newX, newY, newZ), pkt.rotation)
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
-                // 🔥 SYNC MOTION for Motion mode too (the server expects it)
-                pkt.motion = Vector2f.from(moveX * 0.1f, moveZ * 0.1f)
+                pkt.motion = Vector2f.from(cappedX * 0.1f, cappedZ * 0.1f)
             }
 
             FlyMode.Packet -> {
-                val newX = sx + moveX
-                val newY = sy + moveY
-                val newZ = sz + moveZ
+                val newX = sx + cappedX
+                val newY = sy + cappedY
+                val newZ = sz + cappedZ
                 sendPosition(session, Vector3f.from(newX, newY, newZ), pkt.rotation)
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
-                pkt.motion = Vector2f.from(moveX, moveZ)
+                pkt.motion = Vector2f.from(cappedX, cappedZ)
             }
 
             FlyMode.Elytra -> {
-                val newX = sx + moveX * 1.2f
-                val newY = sy + moveY * 0.3f
-                val newZ = sz + moveZ * 1.2f
+                val newX = sx + cappedX * 1.2f
+                val newY = sy + cappedY * 0.3f
+                val newZ = sz + cappedZ * 1.2f
                 sendPosition(session, Vector3f.from(newX, newY, newZ), pkt.rotation)
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
-                pkt.motion = Vector2f.from(moveX * 1.2f, moveZ * 1.2f)
+                pkt.motion = Vector2f.from(cappedX * 1.2f, cappedZ * 1.2f)
             }
         }
 
-        // Grim mode: periodic small fall packet
-        if (grimMode.value) {
-            grimTicks++
-            if (grimTicks >= 20) {
-                grimTicks = 0
-                val fallPos = Vector3f.from(
-                    EntityTracker.selfX,
-                    EntityTracker.selfY - 0.05f,
-                    EntityTracker.selfZ
-                )
-                sendPosition(session, fallPos, pkt.rotation)
-            }
-        }
-
-        // Replace with modified packet (which now has correct motion)
         event.cancelAndReplace(pkt)
     }
 
