@@ -15,89 +15,8 @@ import com.rubidiumclient.core.relay.Definitions
 import com.rubidiumclient.module.ModuleManager
 import com.rubidiumclient.module.social.FriendManager
 
-import com.rubidiumclient.module.combat.ACAModule
-import com.rubidiumclient.module.combat.AnchorAura
-import com.rubidiumclient.module.combat.AntiBed
-import com.rubidiumclient.module.combat.AntiCrystal
-import com.rubidiumclient.module.combat.AutoArmor
-import com.rubidiumclient.module.combat.AutoHvHModule
-import com.rubidiumclient.module.combat.AutoTotem
-
-
-import com.rubidiumclient.module.combat.AutoTrapModule
-import com.rubidiumclient.module.combat.BedAura
-import com.rubidiumclient.module.combat.CTrapModule
-import com.rubidiumclient.module.combat.ObsidianMinerModule
-import com.rubidiumclient.module.combat.Criticals
-import com.rubidiumclient.module.combat.CrystalAura
-import com.rubidiumclient.module.combat.HitAndRunProModule
-import com.rubidiumclient.module.combat.HitboxModule
-import com.rubidiumclient.module.combat.HotbarSwitcherModule
-import com.rubidiumclient.module.combat.InfiniteAuraModule
-import com.rubidiumclient.module.combat.KillAura
-import com.rubidiumclient.module.combat.KillAuraV3
-import com.rubidiumclient.module.combat.LegitAura
-import com.rubidiumclient.module.combat.PistonAura
-import com.rubidiumclient.module.combat.SCRFighter
-import com.rubidiumclient.module.combat.SelfTrapModule
-import com.rubidiumclient.module.combat.TPAura
-import com.rubidiumclient.module.combat.TriggerBotModule
-
-import com.rubidiumclient.module.misc.AutoBaseFinder
-import com.rubidiumclient.module.misc.AutoMine
-import com.rubidiumclient.module.misc.AutoTravel
-import com.rubidiumclient.module.misc.ChatAdvertiser
-import com.rubidiumclient.module.misc.ChatSpammer
-import com.rubidiumclient.module.misc.ComboShortcut
-import com.rubidiumclient.module.misc.CommandHelper
-import com.rubidiumclient.module.misc.AutoDisconnect
-import com.rubidiumclient.module.misc.PacketCollector   // <-- ADDED IMPORT
-import com.rubidiumclient.module.misc.Performance
-import com.rubidiumclient.module.misc.PopCounter
-import com.rubidiumclient.module.misc.ShulkerDupe
-
-import com.rubidiumclient.module.movement.AirJump
-import com.rubidiumclient.module.movement.AntiKnockback
-import com.rubidiumclient.module.movement.AntiPiston
-import com.rubidiumclient.module.movement.AutoSprintModule
-import com.rubidiumclient.module.movement.BypassFly
-import com.rubidiumclient.module.movement.CreativeFly
-import com.rubidiumclient.module.movement.ElytraFly
-import com.rubidiumclient.module.movement.FreeCamera
-import com.rubidiumclient.module.movement.FreeLook
-import com.rubidiumclient.module.movement.Jetpack
-import com.rubidiumclient.module.movement.LifeboatFly
-import com.rubidiumclient.module.movement.MotionFly
-import com.rubidiumclient.module.movement.NoClipModule
-import com.rubidiumclient.module.movement.NoFallDamage
-import com.rubidiumclient.module.movement.NoSlowdown
-import com.rubidiumclient.module.movement.Scaffold
-import com.rubidiumclient.module.movement.Speed
-import com.rubidiumclient.module.movement.SpiderModule
-import com.rubidiumclient.module.movement.Timer
-
-import com.rubidiumclient.module.visual.AntiBlind
-import com.rubidiumclient.module.visual.ArmorHide
-import com.rubidiumclient.module.visual.ArrayListModule
-import com.rubidiumclient.module.visual.ChunkFinder
-import com.rubidiumclient.module.visual.ESP
-import com.rubidiumclient.module.visual.FOVChanger
-import com.rubidiumclient.module.visual.FullBright
-import com.rubidiumclient.module.visual.NoFire
-import com.rubidiumclient.module.visual.ArmorHudModule
-import com.rubidiumclient.module.visual.NoHurtCam
-import com.rubidiumclient.module.visual.TargetESP
-import com.rubidiumclient.module.visual.Xray
-
-import com.rubidiumclient.module.player.AntiAfkModule
-import com.rubidiumclient.module.player.AntiLagModule
-import com.rubidiumclient.module.player.GodModeModule
-
-import com.rubidiumclient.module.world.NukerModule
-import com.rubidiumclient.module.world.WeatherControllerModule
-
-import com.rubidiumclient.utils.ItemIconProvider
-import com.rubidiumclient.utils.WorldBlockTracker
+// Keep all imports – they are used elsewhere (like for types), but we no longer need to import module classes here
+// You can remove them if you want, but they don't hurt.
 
 class RubidiumClientApp : Application() {
 
@@ -132,7 +51,8 @@ class RubidiumClientApp : Application() {
 
         WorldBlockTracker.init()
         ItemIconProvider.init(applicationContext)
-        registerModules()
+        // Module registration is now handled inside ModuleManager.init
+        // registerModules() is removed
     }
 
     private fun installCrashLogger() {
@@ -166,93 +86,5 @@ class RubidiumClientApp : Application() {
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             File(downloadsDir, "baba.txt").writeText(content)
         }
-    }
-
-    private fun registerModules() {
-        ModuleManager.registerAll(
-            // ── COMBAT ──────────────────────────────────────────────
-            KillAura(),
-            KillAuraV3(),
-            LegitAura(),
-            TPAura(),
-            SCRFighter(),
-            HitAndRunProModule(),
-            TriggerBotModule(),
-            HitboxModule(),
-            AutoHvHModule(),
-            InfiniteAuraModule(),
-            ACAModule(),
-            HotbarSwitcherModule(),
-            Criticals(),
-            CrystalAura(),
-            AntiCrystal(),
-            AnchorAura(),
-            BedAura(),
-            AntiBed(),
-            AutoTrapModule(),
-            SelfTrapModule(),
-            CTrapModule(),
-            ObsidianMinerModule(),
-            AutoTotem(),
-            AutoArmor(),
-
-            // ── MOVEMENT ─────────────────────────────────────────────
-            Speed(),
-            MotionFly(),
-            CreativeFly(),
-            BypassFly(),
-            LifeboatFly(),
-            ElytraFly(),
-            Jetpack(),
-            AirJump(),
-            NoFallDamage(),
-            NoSlowdown(),
-            AntiKnockback(),
-            AntiPiston(),
-            NoClipModule(),
-            FreeCamera(),
-            Timer(),
-            SpiderModule(),
-            FreeLook(),
-            Scaffold(),
-
-            // ── VISUAL ───────────────────────────────────────────────
-            ESP(),
-            TargetESP(),
-            Xray(),
-            FullBright(),
-            AntiBlind(),
-            NoFire(),
-            NoHurtCam(),
-            FOVChanger(),
-            ChunkFinder(),
-            ArrayListModule(),
-            ArmorHide(),
-
-            // ── PLAYER ───────────────────────────────────────────────
-            GodModeModule(),
-            AntiAfkModule(),
-            AntiLagModule(),
-
-            // ── WORLD ────────────────────────────────────────────────
-            WeatherControllerModule(),
-            NukerModule(),
-
-            // ── MISC ─────────────────────────────────────────────────
-            AutoBaseFinder(),
-            AutoTravel(),
-            AutoMine(),
-            ChatSpammer(),
-            ChatAdvertiser(),
-            PopCounter(),
-            ArmorHudModule(),
-            AutoSprintModule(),
-            ComboShortcut(1),
-            ComboShortcut(2),
-            AutoDisconnect(),
-            Performance(),
-            CommandHelper(),
-            PacketCollector()   // <-- ADDED HERE (under MISC)
-        )
     }
 }
