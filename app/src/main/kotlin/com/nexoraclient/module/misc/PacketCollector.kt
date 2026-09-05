@@ -156,7 +156,7 @@ class PacketCollector : BaseModule(
                 "eid=${pkt.runtimeEntityId} | type=${pkt.entityType} | pos=(${pkt.position.x}, ${pkt.position.y}, ${pkt.position.z}) | rot=(${pkt.rotation.x}, ${pkt.rotation.y})"
             }
             is RemoveEntityPacket -> {
-                // FIXED: RemoveEntityPacket uses runtimeEntityId, not entityId
+                // ✅ FIXED: use runtimeEntityId (not entityId)
                 "eid=${pkt.runtimeEntityId}"
             }
             is SetEntityDataPacket -> {
