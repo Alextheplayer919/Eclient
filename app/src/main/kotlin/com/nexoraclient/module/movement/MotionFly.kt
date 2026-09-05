@@ -30,7 +30,7 @@ class MotionFly : BaseModule(
 
     override fun onEnable() {
         super.onEnable()
-        lastPos = EntityTracker.getSelfPosition() ?: Vector3f.ZERO
+        lastPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         PacketEventBus.register(this)
     }
 
@@ -45,7 +45,7 @@ class MotionFly : BaseModule(
         val pkt = event.packet as? PlayerAuthInputPacket ?: return
         val session = event.session
 
-        val selfPos = EntityTracker.getSelfPosition() ?: return
+        val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
 
         // ── Anti‑rubberband: distance check ──────────
         val dx = selfPos.x - lastPos.x
