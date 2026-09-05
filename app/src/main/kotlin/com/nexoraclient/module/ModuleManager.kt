@@ -1,10 +1,12 @@
 package com.rubidiumclient.module
 
 import com.rubidiumclient.core.relay.RubidiumRelaySession
-import com.rubidiumclient.module.combat.KillAura
-import com.rubidiumclient.module.combat.SCRFighter
-import com.rubidiumclient.module.misc.PacketCollector
-import com.rubidiumclient.module.movement.MotionFly
+import com.rubidiumclient.module.combat.*
+import com.rubidiumclient.module.misc.*
+import com.rubidiumclient.module.movement.*
+import com.rubidiumclient.module.visual.*
+import com.rubidiumclient.module.player.*
+import com.rubidiumclient.module.world.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,12 +75,91 @@ object ModuleManager {
     fun worldModules()    = byCategory(ModuleCategory.WORLD)
     fun miscModules()     = byCategory(ModuleCategory.MISC)
 
-    // ── Auto‑register modules ──
+    // ── Auto‑register ALL modules on first access ──
     init {
         registerAll(
-            MotionFly(),
+            // ── COMBAT ──────────────────────────────────────────────
             KillAura(),
+            KillAuraV3(),
+            LegitAura(),
+            TPAura(),
             SCRFighter(),
+            HitAndRunProModule(),
+            TriggerBotModule(),
+            HitboxModule(),
+            AutoHvHModule(),
+            InfiniteAuraModule(),
+            ACAModule(),
+            HotbarSwitcherModule(),
+            Criticals(),
+            CrystalAura(),
+            AntiCrystal(),
+            AnchorAura(),
+            BedAura(),
+            AntiBed(),
+            AutoTrapModule(),
+            SelfTrapModule(),
+            CTrapModule(),
+            ObsidianMinerModule(),
+            AutoTotem(),
+            AutoArmor(),
+
+            // ── MOVEMENT ─────────────────────────────────────────────
+            Speed(),
+            MotionFly(),
+            CreativeFly(),
+            BypassFly(),
+            LifeboatFly(),
+            ElytraFly(),
+            Jetpack(),
+            AirJump(),
+            NoFallDamage(),
+            NoSlowdown(),
+            AntiKnockback(),
+            AntiPiston(),
+            NoClipModule(),
+            FreeCamera(),
+            Timer(),
+            SpiderModule(),
+            FreeLook(),
+            Scaffold(),
+
+            // ── VISUAL ───────────────────────────────────────────────
+            ESP(),
+            TargetESP(),
+            Xray(),
+            FullBright(),
+            AntiBlind(),
+            NoFire(),
+            NoHurtCam(),
+            FOVChanger(),
+            ChunkFinder(),
+            ArrayListModule(),
+            ArmorHide(),
+
+            // ── PLAYER ───────────────────────────────────────────────
+            GodModeModule(),
+            AntiAfkModule(),
+            AntiLagModule(),
+
+            // ── WORLD ────────────────────────────────────────────────
+            WeatherControllerModule(),
+            NukerModule(),
+
+            // ── MISC ─────────────────────────────────────────────────
+            AutoBaseFinder(),
+            AutoTravel(),
+            AutoMine(),
+            ChatSpammer(),
+            ChatAdvertiser(),
+            PopCounter(),
+            ArmorHudModule(),
+            AutoSprintModule(),
+            ComboShortcut(1),
+            ComboShortcut(2),
+            AutoDisconnect(),
+            Performance(),
+            CommandHelper(),
             PacketCollector()
         )
     }
