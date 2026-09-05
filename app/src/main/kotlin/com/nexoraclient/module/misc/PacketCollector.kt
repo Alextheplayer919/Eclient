@@ -1,9 +1,9 @@
-package com.nexoraclient.module.misc
+package com.rubidiumclient.module.misc
 
-import com.nexoraclient.events.PacketEvent
-import com.nexoraclient.events.PacketEventBus
-import com.nexoraclient.module.BaseModule
-import com.nexoraclient.module.ModuleCategory
+import com.rubidiumclient.events.PacketEvent
+import com.rubidiumclient.events.PacketEventBus
+import com.rubidiumclient.module.BaseModule
+import com.rubidiumclient.module.ModuleCategory
 import kotlinx.coroutines.*
 import org.cloudburstmc.protocol.bedrock.packet.*
 import java.io.File
@@ -19,16 +19,16 @@ class PacketCollector : BaseModule(
     description = "Tüm paketleri Downloads klasörüne log'lar"
 ), PacketEventBus.PacketListener {
 
-    // ── Settings (safe types only) ──
+    // ── Settings ──────────────────────────────────
     private val logDetailed   = bool("Detailed Log",     true)
     private val maxLines      = int ("Max Lines",        50000, 1000, 200000)
     private val autoFlush     = bool("Auto Flush",       true)
     private val flushInterval = int ("Flush Interval",   5000,  1000, 30000)
 
-    // ── Path detection ──────────────────────────────
+    // ── Path ──────────────────────────────────────
     private val logPath by lazy { getDefaultLogPath() }
 
-    // ── Internal state ──────────────────────────────
+    // ── State ─────────────────────────────────────
     private var writer: PrintWriter? = null
     private var lineCount = 0
     private var flushJob: Job? = null
@@ -56,7 +56,7 @@ class PacketCollector : BaseModule(
             }
         } catch (e: Exception) {
             println("PacketCollector: Failed to open log file: ${e.message}")
-            setEnabled(false)  // fixed: was disable()
+            setEnabled(false)
         }
     }
 
@@ -107,7 +107,6 @@ class PacketCollector : BaseModule(
         }
     }
 
-    // ── Packet summarizer ──────────────────────────
     private fun buildPacketSummary(pkt: BedrockPacket): String {
         return when (pkt) {
             is MovePlayerPacket -> {
@@ -133,7 +132,6 @@ class PacketCollector : BaseModule(
         }
     }
 
-    // ── Android‑aware path detection ──────────────
     private fun getDefaultLogPath(): String {
         val androidDownload = "/storage/emulated/0/Download/packet_log.txt"
         if (File("/storage/emulated/0").exists()) {
