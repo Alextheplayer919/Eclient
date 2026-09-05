@@ -21,7 +21,7 @@ import kotlin.math.*
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura combat + smooth random-direction orbit + guaranteed crits"
+    description = "WAura combat + manual orbit control (joystick/A/D)"
 ), PacketEventBus.PacketListener {
 
     enum class TargetMode { Single, Switch, Multi }
@@ -40,14 +40,12 @@ class KillAura : BaseModule(
     private val orbitEnabled        = bool("Orbit",          true)
     private val orbitRange          = float("Orbit Range",   8f,   2f,   20f)
     private val orbitChaseDist      = float("Chase Distance",10f,  3f,   30f)
-    private val orbitSpeed          = float("Orbit Speed",   30f,  5f,   120f)
     private val orbitHorizSpeed     = float("Orbit H Speed", 25f,  10f,  60f)
     private val orbitVertSpeed      = float("Orbit V Speed", 8f,   2f,   30f)
     private val orbitHeight         = float("Orbit Height",  0.2f, 0f,  2f)
-    private val orbitRandomDir      = bool("Random Direction", false)
-    private val orbitSwitchInterval = int("Switch Interval (s)", 3, 1, 10)
-    private val orbitSmoothTrans    = bool("Smooth Transition", true)          // new: gradual decel/accel
-    private val orbitTransDuration  = float("Transition Time (s)", 0.5f, 0.1f, 2.0f)
+    private val manualOrbit         = bool("Manual Orbit",   true)                // default ON – you control with A/D
+    private val orbitSensitivity    = float("Orbit Sensitivity", 2.0f, 0.5f, 10.0f) // how fast you spin with joystick
+    private val autoOrbitSpeed      = float("Auto Orbit Speed", 30f, 5f, 120f)    // only used when Manual Orbit is OFF
 
     // ── Rotation ──────────────────────────────────────
     private val silentRot       = bool("Silent Rotation", true)
@@ -77,11 +75,6 @@ class KillAura : BaseModule(
     @Volatile private var headLockPitch  = 0f
     @Volatile private var orbitAngle     = 0f
     private var lastOrbitPos = Vector3f.ZERO
-    private var orbitDirection = 1f                     // 1 = clockwise, -1 = counterclockwise
-    private var lastDirSwitchMs = 0L
-    private var orbitTransitionActive = false           // true during smooth direction change
-    private var orbitTransitionStartTime = 0L
-    private var orbitTransitionTargetDir = 1f
 
     private var tickJob: Job? = null
 
@@ -97,9 +90,6 @@ class KillAura : BaseModule(
         headLockPitch  = EntityTracker.selfPitch
         orbitAngle     = Random.nextFloat() * 360f
         lastOrbitPos   = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
-        orbitDirection = if (Random.nextBoolean()) 1f else -1f
-        lastDirSwitchMs = System.currentTimeMillis()
-        orbitTransitionActive = false
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -191,59 +181,40 @@ class KillAura : BaseModule(
             // Decide: chase if too far, else orbit
             val shouldOrbit = distToTarget <= orbitChaseDist.value
 
-            // ── Random direction switching with smooth transition ──
-            if (orbitRandomDir.value) {
-                if (!orbitTransitionActive && nowMs - lastDirSwitchMs >= orbitSwitchInterval.value * 1000L) {
-                    if (orbitSmoothTrans.value) {
-                        // Start smooth transition
-                        orbitTransitionActive = true
-                        orbitTransitionStartTime = nowMs
-                        orbitTransitionTargetDir = -orbitDirection  // target direction
-                        lastDirSwitchMs = nowMs  // prevent re-trigger
-                    } else {
-                        // Instant flip (old behavior)
-                        orbitDirection = -orbitDirection
-                        lastDirSwitchMs = nowMs
-                    }
+            // ── Orbit angle update (manual or auto) ──
+            if (shouldOrbit) {
+                if (manualOrbit.value) {
+                    // Manual: use strafe input (A/D) to control orbit direction
+                    // pkt.motion.x: -1 = left, 1 = right, 0 = no input
+                    val strafeInput = pkt.motion.x
+                    // Sensitivity: how many degrees per tick per input unit
+                    val angularSpeed = strafeInput * orbitSensitivity.value
+                    orbitAngle += angularSpeed
+                    orbitAngle %= 360f
+                } else {
+                    // Auto: simple automatic spin with autoOrbitSpeed
+                    orbitAngle += autoOrbitSpeed.value
+                    orbitAngle %= 360f
                 }
             }
 
-            // Determine effective direction and speed multiplier
-            var effectiveDirection = orbitDirection
-            if (orbitTransitionActive) {
-                val elapsed = (nowMs - orbitTransitionStartTime) / 1000.0f
-                val progress = (elapsed / orbitTransDuration.value).coerceIn(0f, 1f)
-                // multiplier goes from 1 to -1 linearly
-                val multiplier = 1 - 2 * progress
-                effectiveDirection = orbitDirection * multiplier
-                if (progress >= 1f) {
-                    orbitTransitionActive = false
-                    orbitDirection = orbitTransitionTargetDir
-                    effectiveDirection = orbitDirection
-                }
-            }
-
-            // Target position for movement
+            // ── Compute target position ──
             val targetX: Float
             val targetZ: Float
             val targetY: Float
-
             if (shouldOrbit) {
-                // Orbit: circle around target with effective direction
-                orbitAngle += orbitSpeed.value * effectiveDirection
-                orbitAngle %= 360f
                 val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
                 targetX = primary.x + cos(rad) * orbitRange.value
                 targetZ = primary.z + sin(rad) * orbitRange.value
                 targetY = primary.y + orbitHeight.value
             } else {
-                // Chase: move directly towards target (no orbit)
+                // Chase: move directly towards target
                 targetX = primary.x
                 targetZ = primary.z
                 targetY = primary.y + orbitHeight.value
             }
 
-            // Compute velocity towards target position
+            // ── Move toward target position ──
             val dirX = targetX - selfPos.x
             val dirZ = targetZ - selfPos.z
             val dirY = targetY - selfPos.y
