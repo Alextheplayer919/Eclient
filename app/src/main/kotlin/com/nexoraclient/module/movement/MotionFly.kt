@@ -110,10 +110,9 @@ class MotionFly : BaseModule(
         }
 
         // ── Send motion packet ──────────────────────
-        val motionPacket = SetEntityMotionPacket().apply {
-            runtimeEntityId = EntityTracker.selfRuntimeId
-            motion = Vector2f.from(motionX, motionZ)
-        }
+        val motionPacket = SetEntityMotionPacket()
+        motionPacket.runtimeEntityId = EntityTracker.selfRuntimeId
+        motionPacket.motion = Vector3f.from(motionX, vertSpeed, motionZ)
         session.clientBound(motionPacket)
 
         // Update last position to current
