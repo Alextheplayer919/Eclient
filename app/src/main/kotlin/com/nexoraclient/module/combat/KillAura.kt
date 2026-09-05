@@ -6,27 +6,29 @@ import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.*
 import com.rubidiumclient.module.social.isFriendEntity
-import com.rubidiumclient.utils.*
+import com.rubidiumclient.utils.CritLock
+import com.rubidiumclient.utils.MathUtil
+import com.rubidiumclient.utils.PacketUtil
+import com.rubidiumclient.utils.RotationUtil
 import kotlinx.coroutines.*
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
-import kotlin.math.*
 import kotlin.random.Random
+import kotlin.math.*
 
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "Wide‑rotation orbital aimbot with target lock"
+    description = "Silent aimbot – instant lock"
 ), PacketEventBus.PacketListener {
 
     enum class HitType   { Single, Multi }
     enum class DelayMode { Interval, Cps }
-    enum class RotMode   { None, Instant, Smooth, Silent }
+    enum class RotMode   { None, Instant, Silent }   // removed Smooth for simplicity
     enum class CritMode  { None, Fast, UltraFast }
-    enum class StrafeMode { None, Orbit, Manual }
 
-    // ── Core settings ──────────────────────────────
+    // ── Core settings ──────────────────────────────────
     private val range          = float("Range",          32f,  1f,   32f)
     private val hitType        = enum ("Hit Type",       HitType.Multi)
     private val delayMode      = enum ("Delay Method",   DelayMode.Cps)
@@ -39,31 +41,20 @@ class KillAura : BaseModule(
     private val boostAmount    = float("Boost Amount",   10f,   1f,   10f)
     private val boostDelay     = float("Boost Delay",    0.1f, 0.1f,  60f)
     private val boostAttempts  = int  ("Boost Attempts", 20,    1,    20)
-    private val rotMode        = enum ("Rotation",        RotMode.Smooth)
-    private val rotationSpeed  = float("Rotation Speed", 30f,   0f,   30f)
-    private val osuRots        = bool ("Osu Rots",       false)
+    private val rotMode        = enum ("Rotation",        RotMode.Instant)   // INSTANT LOCK
+    private val osuRots        = bool ("Osu Rots",       false)              // keep OFF
     private val ignoreFriends  = bool ("Ignore Friends",  true)
     private val antiBot        = bool ("Anti Bot",        true)
     private val includeMobs    = bool ("Mobs",           false)
     private val shortcut       = bool ("Shortcut",       false)
-
-    // ── Wide‑rotation / Orbital ──────────────────────
-    private val strafeMode     = enum ("Strafe Mode",    StrafeMode.Orbit)
-    private val orbitRange     = float("Orbit Range",   4.5f,  1f,   12f)
-    private val orbitSpeed     = float("Orbit Speed",   40f,  5f,   120f)
-    private val approachSpeed  = float("Approach Speed",0.8f, 0.1f, 3f)
-    private val verticalSpeed  = float("Vertical Speed",1.8f, 0.1f, 4f)
 
     private val critMode       = enum("Crit Mode", CritMode.UltraFast)
 
     companion object {
         private const val CRIT_LOCK_KEY = "crit-injection"
         private const val TPAURA_CONFLICT_WINDOW_MS = 120L
-        private const val TARGET_SCAN_INTERVAL = 100L
-        private const val MOVE_INTERVAL_MS = 20L
     }
 
-    // ── State ──────────────────────────────────────
     @Volatile private var pendingAttacks = 0
     @Volatile private var lastAttackMs   = 0L
     @Volatile private var lastScanMs     = 0L
@@ -73,24 +64,20 @@ class KillAura : BaseModule(
     @Volatile private var isBoosting     = false
     @Volatile private var boostTimerMs   = 0L
     @Volatile private var lastBoostMs    = 0L
-    @Volatile private var orbitAngle     = 0f
-    @Volatile private var lastMoveMs     = 0L
 
     private var tickJob: Job? = null
 
     override fun onEnable() {
         super.onEnable()
-        pendingAttacks   = 0
-        lastAttackMs     = 0L
-        lastScanMs       = 0L
-        cachedTargets    = emptyList()
-        headLockYaw      = EntityTracker.selfYaw
-        headLockPitch    = EntityTracker.selfPitch
-        isBoosting       = false
-        boostTimerMs     = 0L
-        lastBoostMs      = System.currentTimeMillis()
-        orbitAngle       = Random.nextFloat() * 360f
-        lastMoveMs       = 0L
+        pendingAttacks = 0
+        lastAttackMs   = 0L
+        lastScanMs     = 0L
+        cachedTargets  = emptyList()
+        headLockYaw    = EntityTracker.selfYaw
+        headLockPitch  = EntityTracker.selfPitch
+        isBoosting     = false
+        boostTimerMs   = 0L
+        lastBoostMs    = System.currentTimeMillis()
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -109,50 +96,28 @@ class KillAura : BaseModule(
         val targets = cachedTargets
         val primary = targets.firstOrNull()
 
-        // ── Rotation ────────────────────────────────────
-        if (primary != null && rotMode.value != RotMode.None) {
+        // ── Instant head lock (no smoothing, no tweaking) ──
+        if (rotMode.value != RotMode.None && primary != null) {
             val rot = RotationUtil.toEntity(primary)
             var targetYaw = rot.yaw
             if (osuRots.value) {
                 val snap = 36.4f
                 targetYaw = round(targetYaw / snap) * snap
             }
-            when (rotMode.value) {
-                RotMode.Instant -> {
-                    headLockYaw   = targetYaw
-                    headLockPitch = rot.pitch
-                }
-                RotMode.Smooth -> {
-                    val f = (rotationSpeed.value / 30f).coerceIn(0.02f, 1f)
-                    headLockYaw   = smoothYaw(headLockYaw, targetYaw, f)
-                    headLockPitch = smoothPitch(headLockPitch, rot.pitch, f)
-                }
-                RotMode.Silent -> {
-                    headLockYaw   = targetYaw
-                    headLockPitch = rot.pitch
-                }
-                else -> {}
-            }
-            pkt.rotation = Vector3f.from(headLockPitch, headLockYaw, headLockYaw)
-            if (rotMode.value != RotMode.Silent) {
+            // INSTANT assignment – no smooth interpolation
+            headLockYaw   = targetYaw
+            headLockPitch = rot.pitch
+            pkt.rotation  = Vector3f.from(headLockPitch, headLockYaw, headLockYaw)
+            
+            if (rotMode.value == RotMode.Instant) {
+                // Also update camera if not silent
                 EntityTracker.selfYaw   = headLockYaw
                 EntityTracker.selfPitch = headLockPitch
             }
+            // Silent mode: don't update camera
         }
 
-        // ── Wide‑orbit movement ────────────────────────
-        if (primary != null && strafeMode.value != StrafeMode.None) {
-            val now = System.currentTimeMillis()
-            if (now - lastMoveMs >= MOVE_INTERVAL_MS) {
-                lastMoveMs = now
-                val session = event.session
-                scope.launch {
-                    moveOrbit(session, primary)
-                }
-            }
-        }
-
-        // ── Attack logic ──────────────────────────────
+        // ── Prepare attack ──────────────────────────────
         if (pendingAttacks <= 0 || primary == null) {
             event.cancelAndReplace(pkt)
             return
@@ -179,6 +144,7 @@ class KillAura : BaseModule(
                             CritMode.UltraFast -> injectCritUltraFastUp(session)
                             CritMode.None      -> {}
                         }
+
                         repeat(pendingAttacks) {
                             PacketUtil.sendSwing(session)
                             toAttack.forEach { t ->
@@ -188,6 +154,7 @@ class KillAura : BaseModule(
                                 }
                             }
                         }
+
                         if (critMode.value != CritMode.None) {
                             PacketUtil.sendMoveAtSelf(session, dyOffset = 0f, onGround = true)
                         }
@@ -212,86 +179,9 @@ class KillAura : BaseModule(
         event.cancelAndReplace(pkt)
     }
 
-    // ── Movement: approach + orbit ──────────────────
-    private suspend fun moveOrbit(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity) {
-        if (tpAuraRecentlyMoved()) return
-
-        val selfX = EntityTracker.selfX
-        val selfY = EntityTracker.selfY
-        val selfZ = EntityTracker.selfZ
-
-        val tx = target.x
-        val ty = target.y
-        val tz = target.z
-
-        val dx = tx - selfX
-        val dz = tz - selfZ
-        val horizDist = sqrt(dx * dx + dz * dz)
-
-        val targetY = ty + orbitRange.value * 0.5f
-
-        val newPos = if (horizDist > orbitRange.value * 1.5f) {
-            val step = approachSpeed.value
-            val len = horizDist.coerceAtLeast(0.001f)
-            Vector3f.from(
-                selfX + dx / len * step,
-                selfY + (targetY - selfY).coerceIn(-verticalSpeed.value, verticalSpeed.value),
-                selfZ + dz / len * step
-            )
-        } else {
-            when (strafeMode.value) {
-                StrafeMode.Orbit -> {
-                    orbitAngle += orbitSpeed.value
-                    orbitAngle %= 360f
-                    val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
-                    val r = orbitRange.value
-                    Vector3f.from(
-                        tx + sin(rad) * r,
-                        targetY,
-                        tz + cos(rad) * r
-                    )
-                }
-                StrafeMode.Manual -> {
-                    val currentDist = horizDist
-                    val desired = orbitRange.value
-                    if (abs(currentDist - desired) > 0.3f) {
-                        val dirX = dx / horizDist
-                        val dirZ = dz / horizDist
-                        val move = (desired - currentDist).coerceIn(-approachSpeed.value, approachSpeed.value)
-                        Vector3f.from(
-                            selfX + dirX * move,
-                            selfY + (targetY - selfY).coerceIn(-verticalSpeed.value, verticalSpeed.value),
-                            selfZ + dirZ * move
-                        )
-                    } else {
-                        Vector3f.from(selfX, selfY, selfZ)
-                    }
-                }
-                else -> Vector3f.from(selfX, selfY, selfZ)
-            }
-        }
-
-        try {
-            val yaw = if (rotMode.value != RotMode.None) headLockYaw else EntityTracker.selfYaw
-            val pitch = if (rotMode.value != RotMode.None) headLockPitch else EntityTracker.selfPitch
-            TimerPvP.dispatch(
-                session,
-                selfX, selfY, selfZ,
-                newPos.x, newPos.y, newPos.z,
-                yaw, pitch,
-                onGround = false
-            )
-            TPAura.notifyExternalPositionOverride()
-            EntityTracker.selfX = newPos.x
-            EntityTracker.selfY = newPos.y
-            EntityTracker.selfZ = newPos.z
-        } catch (_: Exception) {}
-    }
-
     private fun tpAuraRecentlyMoved(): Boolean =
         System.currentTimeMillis() - TPAura.lastPositionOverrideMs < TPAURA_CONFLICT_WINDOW_MS
 
-    // ── Crit injection ──────────────────────────────
     private suspend fun injectCritFastUp(s: RubidiumRelaySession) {
         PacketUtil.sendMoveAtSelf(s, dyOffset = 0.42f, onGround = false)
         delay(10L)
@@ -304,7 +194,6 @@ class KillAura : BaseModule(
         delay(5L)
     }
 
-    // ── Tick loop ──────────────────────────────────
     private suspend fun tickLoop() {
         while (currentCoroutineContext().isActive) {
             if (isEnabled) tick()
@@ -335,7 +224,7 @@ class KillAura : BaseModule(
 
         if (now - lastAttackMs < delayMs) return
 
-        if (now - lastScanMs >= TARGET_SCAN_INTERVAL) {
+        if (now - lastScanMs >= 50L) {
             cachedTargets = selectTargets()
             lastScanMs    = now
         }
@@ -346,7 +235,6 @@ class KillAura : BaseModule(
         pendingAttacks = if (isBoosting) boostAttempts.value else attempts.value
     }
 
-    // ── Target selection ──────────────────────────
     private fun selectTargets(): List<EntityTracker.TrackedEntity> {
         val sx = EntityTracker.selfX; val sy = EntityTracker.selfY; val sz = EntityTracker.selfZ
         val raw = EntityTracker.getEntitiesInRange(range.value)
@@ -363,17 +251,5 @@ class KillAura : BaseModule(
         return scored.map { it.entity }
     }
 
-    // ── Utilities ──────────────────────────────────
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
-
-    private fun smoothYaw(cur: Float, tgt: Float, f: Float): Float {
-        var d = tgt - cur
-        if (d > 180f) d -= 360f; if (d < -180f) d += 360f
-        var r = (cur + d * f) % 360f
-        if (r > 180f) r -= 360f; if (r < -180f) r += 360f
-        return r
-    }
-
-    private fun smoothPitch(cur: Float, tgt: Float, f: Float) =
-        (cur + (tgt - cur) * f).coerceIn(-90f, 90f)
 }
