@@ -6,6 +6,7 @@ import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.module.*
 import com.rubidiumclient.utils.RubberbandGuard
 import kotlinx.coroutines.launch
+import org.cloudburstmc.math.vector.Vector2f
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.protocol.bedrock.data.Ability
 import org.cloudburstmc.protocol.bedrock.data.AbilityLayer
@@ -22,34 +23,37 @@ import kotlin.math.sin
 class MotionFly : BaseModule(
     name        = "MotionFly",
     category    = ModuleCategory.MOVEMENT,
-    description = "MotionFly with anarchy bypass modes (Vanilla / Motion / Packet / Elytra)"
+    description = "High‑speed anarchy fly with motion sync"
 ) {
 
     enum class FlyMode {
-        Motion,   // original SetEntityMotion
-        Vanilla,  // ground‑spoof with MovePlayerPacket
-        Packet,   // pure MovePlayerPacket + abilities
-        Elytra    // simulate elytra glide
+        Motion,   // SetEntityMotion – best for high speeds (up to 30+)
+        Vanilla,  // MovePlayerPacket + ground spoof – good for bypass
+        Packet,   // Pure MovePlayerPacket + abilities
+        Elytra    // Glide simulation
     }
 
     // ── Original settings ──────────────────────────────────
-    private val horizontalSpeed = float("Horizontal Speed", 3.5f, 0.5f, 10.0f)
-    private val verticalSpeed   = float("Vertical Speed",   1.5f, 0.5f, 5.0f)
+    private val horizontalSpeed = float("Horizontal Speed", 3.5f, 0.1f, 30.0f)   // allow up to 30
+    private val verticalSpeed   = float("Vertical Speed",   1.5f, 0.1f, 20.0f)
     private val glideSpeed      = float("Glide Speed",      0.1f, -0.01f, 1.0f)
-    private val motionInterval  = float("Delay",            50.0f, 10.0f, 100.0f)
+    private val motionInterval  = float("Delay",            30.0f, 5.0f, 100.0f)
     private val shortcut        = bool ("Shortcut",         false)
     private val antiRubberband    = bool ("Anti Rubber-band", true)
     private val rubberbandMaxStep = float("Max Step",         0.9f, 0.3f, 2.0f)
     private val rubberbandDelayMs = int  ("Step Delay (ms)",  12,   2,   40)
 
     // ── New anarchy bypass settings ──────────────────────
-    private val flyMode         = enum("Fly Mode",         FlyMode.Vanilla)   // default to best bypass
-    private val bypassMode      = bool ("Lifeboat Bypass", true)              // uses negative glide when not pressing up/down
+    private val flyMode         = enum("Fly Mode",         FlyMode.Motion)     // default Motion for high speed
+    private val bypassMode      = bool ("Lifeboat Bypass", true)
     private val antiKick        = bool ("Anti-Kick",       true)
     private val antiKickInterval = int ("Anti-Kick Interval", 3500, 1000, 8000)
-    private val jitter          = float("Jitter",          0.03f, 0f, 0.2f)
+    private val jitter          = float("Jitter",          0.02f, 0f, 0.2f)
     private val grimMode        = bool ("Grim Mode",       false)
     private val grimSpeed       = float("Grim Speed",       0.25f, 0.05f, 1.0f)
+
+    // ── Timer multiplier (new) – speeds up ticks without changing per‑packet delta ──
+    private val timerMultiplier = float("Timer Multiplier", 1.0f, 0.5f, 5.0f)
 
     // ── State ──────────────────────────────────────────
     @Volatile private var lastMotionTime = 0L
@@ -62,7 +66,7 @@ class MotionFly : BaseModule(
 
     private val rubberbandGuard = RubberbandGuard(scope)
 
-    // ── Ability packets (same as original) ──────────────
+    // ── Ability packets ──────────────────────────────
     private val flyPacket = UpdateAbilitiesPacket().apply {
         playerPermission  = PlayerPermission.OPERATOR
         commandPermission = CommandPermission.OWNER
@@ -162,8 +166,9 @@ class MotionFly : BaseModule(
             }
         }
 
-        // Rate limit
-        if (now - lastMotionTime < motionInterval.value) return
+        // Rate limit (multiplied by timer to speed up ticks)
+        val effectiveDelay = motionInterval.value / timerMultiplier.value
+        if (now - lastMotionTime < effectiveDelay) return
         lastMotionTime = now
 
         // ── Speed calculation ──────────────────────────────
@@ -176,7 +181,7 @@ class MotionFly : BaseModule(
         val wantDown = pkt.inputData.contains(PlayerAuthInputData.WANT_DOWN)
 
         val yawRad = Math.toRadians(pkt.rotation.y.toDouble()).toFloat()
-        val sinYaw = sin(yawRad.toDouble()).toFloat()   // convert to Double, then back to Float
+        val sinYaw = sin(yawRad.toDouble()).toFloat()
         val cosYaw = cos(yawRad.toDouble()).toFloat()
 
         val strafe  = inputX * effHoriz
@@ -187,11 +192,11 @@ class MotionFly : BaseModule(
         val jx = (sin(jitterSeed) * jitter.value).toFloat()
         val jz = (cos(jitterSeed + 1.0) * jitter.value).toFloat()
 
-        // Vertical with Lifeboat bypass
+        // Vertical
         val vertical = when {
             wantUp -> effVert
             wantDown -> -effVert
-            bypassMode.value -> -glideSpeed.value.coerceAtLeast(-0.1f)   // soft fall
+            bypassMode.value -> -glideSpeed.value.coerceAtLeast(-0.1f)
             else -> glideSpeed.value
         }
 
@@ -213,6 +218,8 @@ class MotionFly : BaseModule(
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
+                // 🔥 CRITICAL FIX: sync motion with the packet so server doesn't rubberband
+                pkt.motion = Vector2f.from(moveX, moveZ)
             }
 
             FlyMode.Motion -> {
@@ -235,6 +242,8 @@ class MotionFly : BaseModule(
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
+                // 🔥 SYNC MOTION for Motion mode too (the server expects it)
+                pkt.motion = Vector2f.from(moveX * 0.1f, moveZ * 0.1f)
             }
 
             FlyMode.Packet -> {
@@ -245,6 +254,7 @@ class MotionFly : BaseModule(
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
+                pkt.motion = Vector2f.from(moveX, moveZ)
             }
 
             FlyMode.Elytra -> {
@@ -255,6 +265,7 @@ class MotionFly : BaseModule(
                 EntityTracker.selfX = newX
                 EntityTracker.selfY = newY
                 EntityTracker.selfZ = newZ
+                pkt.motion = Vector2f.from(moveX * 1.2f, moveZ * 1.2f)
             }
         }
 
@@ -272,6 +283,7 @@ class MotionFly : BaseModule(
             }
         }
 
+        // Replace with modified packet (which now has correct motion)
         event.cancelAndReplace(pkt)
     }
 
