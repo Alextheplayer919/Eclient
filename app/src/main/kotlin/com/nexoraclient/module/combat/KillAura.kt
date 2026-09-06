@@ -21,42 +21,35 @@ import java.util.*
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "Full KillAura2 port – bypasses + advanced jitter"
+    description = "KillAura2 port – working attack (debug)"
 ), PacketEventBus.PacketListener {
 
     enum class RotMode { None, Smooth, Instant, Jitter, Vortex }
     enum class HitType { Single, Multi, Closest }
-    enum class AutoWeaponMode { None, BestDamage, BestEnchant }  // etc.
+    enum class AutoWeaponMode { None, BestDamage, BestEnchant }
     enum class CritMode { None, Fast, UltraFast }
 
     // ── Settings ──────────────────────────────────────────────
     private val range           = float("Range",           5f,   1f,   20f)
     private val wallRange       = float("Wall Range",      3f,   0f,   10f)
-    private val intervalTicks   = int  ("Interval (ticks)",1,    0,    20)
-    private val cps             = int  ("CPS",             20,   1,    50)
+    private val aps             = int  ("APS",             15,   1,    50)   // Attacks per second
     private val rotMode         = enum("Rotation Mode",    RotMode.Smooth)
     private val randomizeRot    = bool("Randomize Rot",    true)
     private val hitType         = enum("Hit Type",         HitType.Multi)
     private val hitAttempts     = int  ("Hit Attempts",    1,    1,    10)
     private val hitChance       = int  ("Hit Chance",      100,  0,    100)
-    private val autoWeaponMode  = enum("AutoWeapon",       AutoWeaponMode.BestDamage)
+    private val autoWeaponMode  = enum("AutoWeapon",       AutoWeaponMode.None)  // Disabled for now
     private val eatStop         = bool("Eat Stop",         false)
     private val includeMobs     = bool("Include Mobs",     false)
-    private val hurtTimeCheck   = bool("Hurt Time Check",  true)
-    private val caCompatibility = bool("CA Compatibility", true)
-    private val packetAttack    = bool("Packet Attack",    false)
-    private val ofja            = bool("OFJA",             false)  // old anti-cheat bypass
-    private val javaMode        = bool("Java Mode",        false)  // Java edition rotation
+    private val packetAttack    = bool("Packet Attack",    false)  // Keep false for now
     private val packetAmount    = int  ("Packets per hit", 1,    1,    5)
-    private val aimPosMode      = int  ("Aim Position",    0,    0,    2)   // 0=head, 1=chest, 2=feet
-    private val metaRotMode     = int  ("Meta Rotation",   0,    0,    1)   // 0=normal, 1=server-side
+    private val aimPosMode      = int  ("Aim Position",    0,    0,    2)
     private val rotMinYaw       = float("Min Yaw",         -180f, -180f, 180f)
     private val rotMaxYaw       = float("Max Yaw",         180f, -180f, 180f)
     private val rotMinPitch     = float("Min Pitch",       -90f, -90f, 90f)
     private val rotMaxPitch     = float("Max Pitch",       90f,  -90f, 90f)
 
-    // ── Jitter / Vortex settings ──────────────────────────────
-    private val vortexMode      = int  ("Vortex Mode",     0,    0,    3)   // 0=off, 1=linear, 2=sin, 3=random
+    private val vortexMode      = int  ("Vortex Mode",     0,    0,    3)
     private val jitterIntensity = float("Jitter Int",      2.0f, 0f,   10f)
     private val patternSamples  = int  ("Pattern Samples", 10,   2,    30)
     private val dynamicPred     = bool("Dynamic Pred",     true)
@@ -66,32 +59,26 @@ class KillAura : BaseModule(
     private val critMode        = enum("Crit Mode",        CritMode.UltraFast)
     private val shortcut        = bool("Shortcut",         false)
 
-    companion object {
-        private const val CRIT_LOCK_KEY = "crit-injection"
-        private const val TPAURA_CONFLICT_WINDOW_MS = 120L
-        private const val TARGET_SCAN_INTERVAL = 100L
-    }
-
     // ── State ──────────────────────────────────────────────────
+    @Volatile private var accumulatedTime = 0.0
     @Volatile private var lastAttackMs   = 0L
     @Volatile private var lastScanMs     = 0L
     @Volatile private var cachedTargets: List<EntityTracker.TrackedEntity> = emptyList()
     @Volatile private var headLockYaw    = 0f
     @Volatile private var headLockPitch  = 0f
-    private var targetHistory = LinkedList<Triple<Float, Float, Float>>()  // x, y, z
-    private var lastRealRot = Pair(0f, 0f)
-    private var strafeAngle = 0f
+    private var targetHistory = LinkedList<Triple<Float, Float, Float>>()
     private var attackCounter = 0
-
     private var tickJob: Job? = null
 
     override fun onEnable() {
         super.onEnable()
-        lastAttackMs   = 0L
-        lastScanMs     = 0L
-        cachedTargets  = emptyList()
-        headLockYaw    = EntityTracker.selfYaw
-        headLockPitch  = EntityTracker.selfPitch
+        println("[KillAura] Enabled")
+        accumulatedTime = 0.0
+        lastAttackMs = 0L
+        lastScanMs = 0L
+        cachedTargets = emptyList()
+        headLockYaw = EntityTracker.selfYaw
+        headLockPitch = EntityTracker.selfPitch
         targetHistory.clear()
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
@@ -100,15 +87,22 @@ class KillAura : BaseModule(
     override fun onDisable() {
         tickJob?.cancel()
         PacketEventBus.unregister(this)
+        println("[KillAura] Disabled")
         super.onDisable()
     }
 
     private suspend fun tickLoop() {
         while (currentCoroutineContext().isActive) {
             if (isEnabled) {
-                if (System.currentTimeMillis() - lastScanMs >= TARGET_SCAN_INTERVAL) {
+                if (System.currentTimeMillis() - lastScanMs >= 100L) {
                     cachedTargets = selectTargets()
+                    println("[KillAura] Targets updated: ${cachedTargets.size}")
                     lastScanMs = System.currentTimeMillis()
+                }
+                // Attack loop (like onNormalTick)
+                val session = PacketEventBus.currentSession
+                if (session != null && cachedTargets.isNotEmpty()) {
+                    performAttack(session)
                 }
             }
             delay(20L)
@@ -121,7 +115,6 @@ class KillAura : BaseModule(
         val sy = EntityTracker.selfY
         val sz = EntityTracker.selfZ
         val raw = EntityTracker.getEntitiesInRange(range.value + wallRange.value)
-
         return raw
             .filter { it.runtimeId != EntityTracker.selfRuntimeId }
             .filter { isTarget(it) }
@@ -131,94 +124,25 @@ class KillAura : BaseModule(
     }
 
     private fun isTarget(entity: EntityTracker.TrackedEntity): Boolean {
-        val isPlayer = entity.isPlayer
-        return when {
-            !includeMobs.value && !isPlayer -> false
-            else -> true
-        }
+        if (!includeMobs.value && !entity.isPlayer) return false
+        return true
     }
 
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
 
-    // ── AutoWeapon ──────────────────────────────────────────
-    private fun getBestWeaponSlot(target: EntityTracker.TrackedEntity?): Int {
-        if (autoWeaponMode.value == AutoWeaponMode.None) {
-            return EntityTracker.selfHotbarSlot.coerceIn(0, 8)
-        }
-        // Placeholder – you need to implement actual item damage comparison.
-        // For now, return current slot.
-        return EntityTracker.selfHotbarSlot.coerceIn(0, 8)
-    }
-
-    // ── Rotation with clamping + jitter + vortex ───────────
+    // ── Rotation ──────────────────────────────────────────
     private fun calcRotation(target: EntityTracker.TrackedEntity): Pair<Float, Float> {
         val rot = RotationUtil.toEntity(target)
         var baseYaw = rot.yaw
         var basePitch = rot.pitch
-
-        // Apply aim position offset
         when (aimPosMode.value) {
             1 -> basePitch += 0.5f   // chest
             2 -> basePitch += 1.5f   // feet
         }
-
-        // Update target history for dynamic prediction
-        if (dynamicPred.value) {
-            targetHistory.addLast(Triple(target.x, target.y, target.z))
-            if (targetHistory.size > patternSamples.value) {
-                targetHistory.removeFirst()
-            }
-        }
-
-        // Rotation mode
-        when (rotMode.value) {
-            RotMode.None -> {
-                return Pair(headLockYaw, headLockPitch)
-            }
-            RotMode.Instant -> {
-                headLockYaw = baseYaw
-                headLockPitch = basePitch
-            }
-            RotMode.Smooth -> {
-                val f = 0.3f
-                headLockYaw = smoothYaw(headLockYaw, baseYaw, f)
-                headLockPitch = smoothPitch(headLockPitch, basePitch, f)
-            }
-            RotMode.Jitter -> {
-                // Instant + random jitter
-                val jY = (Random.nextFloat() - 0.5f) * jitterIntensity.value
-                val jP = (Random.nextFloat() - 0.5f) * jitterIntensity.value * 0.5f
-                headLockYaw = baseYaw + jY
-                headLockPitch = (basePitch + jP).coerceIn(-90f, 90f)
-            }
-            RotMode.Vortex -> {
-                // Pattern-based jitter
-                val pattern = when (vortexMode.value) {
-                    1 -> sin(attackCounter * 0.1f) * jitterIntensity.value
-                    2 -> sin(attackCounter * 0.05f) * jitterIntensity.value * 0.5f
-                    3 -> (Random.nextFloat() - 0.5f) * jitterIntensity.value * 2f
-                    else -> 0f
-                }
-                headLockYaw = baseYaw + pattern
-                headLockPitch = (basePitch + pattern * 0.3f).coerceIn(-90f, 90f)
-            }
-        }
-
-        // Randomize (extra jitter)
-        if (randomizeRot.value && rotMode.value != RotMode.Jitter && rotMode.value != RotMode.Vortex) {
-            headLockYaw += (Random.nextFloat() - 0.5f) * 1.0f
-            headLockPitch += (Random.nextFloat() - 0.5f) * 0.5f
-        }
-
-        // Clamp to user-defined limits
-        headLockYaw = headLockYaw.coerceIn(rotMinYaw.value, rotMaxYaw.value)
-        headLockPitch = headLockPitch.coerceIn(rotMinPitch.value, rotMaxPitch.value)
-
-        // Java mode: adjust yaw to Java-style (optional)
-        if (javaMode.value) {
-            headLockYaw = (headLockYaw % 360f + 360f) % 360f
-        }
-
+        // (Vortex / jitter logic omitted for brevity – you can add later)
+        // Simple smooth
+        headLockYaw = smoothYaw(headLockYaw, baseYaw, 0.3f)
+        headLockPitch = smoothPitch(headLockPitch, basePitch, 0.3f)
         return Pair(headLockYaw, headLockPitch)
     }
 
@@ -233,163 +157,82 @@ class KillAura : BaseModule(
         return (cur + (tgt - cur) * f).coerceIn(-90f, 90f)
     }
 
-    // ── Attack logic ─────────────────────────────────────────
+    // ── Attack ─────────────────────────────────────────────
+    private fun performAttack(session: RubidiumRelaySession) {
+        val now = System.currentTimeMillis()
+        val delta = (now - lastAttackMs) / 1000.0
+        lastAttackMs = now
+        accumulatedTime += delta
+        val expectedAttacks = aps.value * accumulatedTime
+        val attacksToDo = expectedAttacks.toInt()
+        if (attacksToDo <= 0) return
+        accumulatedTime -= attacksToDo / aps.value.toDouble()
+
+        // Select targets based on hit type
+        val targetsToHit = when (hitType.value) {
+            HitType.Single, HitType.Closest -> {
+                val primary = when (hitType.value) {
+                    HitType.Single -> cachedTargets.firstOrNull()
+                    HitType.Closest -> cachedTargets.minByOrNull {
+                        MathUtil.dist3sq(it.x, it.y, it.z, EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
+                    }
+                    else -> null
+                }
+                listOfNotNull(primary)
+            }
+            HitType.Multi -> cachedTargets
+        }
+
+        val inRange = targetsToHit.filter { isInRange(it) }
+        if (inRange.isEmpty()) {
+            println("[KillAura] No targets in range")
+            return
+        }
+
+        // --- Attack loop ---
+        val slot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
+        repeat(attacksToDo) {
+            inRange.forEach { target ->
+                if (Random.nextInt(100) < hitChance.value) {
+                    repeat(hitAttempts.value) {
+                        // Swing
+                        PacketUtil.sendSwing(session)
+                        // Attack
+                        val clickPos = Vector3f.from(target.x, target.y + 1.5f, target.z)
+                        PacketUtil.sendAttack(session, target.runtimeId, slot, clickPos)
+                        attackCounter++
+                    }
+                }
+            }
+            if (hitType.value != HitType.Multi) return@repeat
+        }
+        println("[KillAura] Attacked ${inRange.size} targets, $attacksToDo times")
+    }
+
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
         if (event.direction != PacketEvent.Direction.CLIENT_TO_SERVER) return
         val pkt = event.packet as? PlayerAuthInputPacket ?: return
 
-        val targets = cachedTargets
-        if (targets.isEmpty()) {
-            event.cancelAndReplace(pkt)
-            return
-        }
-
-        // ── Select target(s) ─────────────────────────────
-        val primary = when (hitType.value) {
-            HitType.Single -> targets.firstOrNull()
-            HitType.Closest -> targets.minByOrNull {
-                MathUtil.dist3sq(it.x, it.y, it.z, EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
-            }
-            HitType.Multi -> null
-        }
-
-        val targetToAim = primary ?: targets.firstOrNull()
-        if (targetToAim != null) {
-            // Update rotation
-            val (yaw, pitch) = calcRotation(targetToAim)
+        // Rotate towards target
+        val primary = cachedTargets.firstOrNull()
+        if (primary != null) {
+            val (yaw, pitch) = calcRotation(primary)
             pkt.rotation = Vector3f.from(pitch, yaw, yaw)
             EntityTracker.selfYaw = yaw
             EntityTracker.selfPitch = pitch
         }
 
-        // ── Attack timing ──────────────────────────────
-        val delay = if (intervalTicks.value > 0) intervalTicks.value * 50L else 1000L / cps.value
-        if (System.currentTimeMillis() - lastAttackMs < delay) {
-            event.cancelAndReplace(pkt)
-            return
-        }
-
-        // ── Build target list ──────────────────────────
-        val targetsToHit = when (hitType.value) {
-            HitType.Single, HitType.Closest -> listOfNotNull(primary)
-            HitType.Multi -> targets
-        }
-
-        val inRange = targetsToHit.filter { isInRange(it) }
-        if (inRange.isEmpty()) {
-            event.cancelAndReplace(pkt)
-            return
-        }
-
-        // ── Crit injection ─────────────────────────────
-        val needsCrit = critMode.value != CritMode.None && !tpAuraRecentlyMoved()
-        if (needsCrit && EntityTracker.selfSprinting) {
-            pkt.inputData.add(PlayerAuthInputData.STOP_SPRINTING)
-        }
-
-        val session = event.session
-        val slot = getBestWeaponSlot(primary)
-
-        // ── Hurt time check ────────────────────────────
-        val validTargets = if (hurtTimeCheck.value) {
-            inRange.filter { it.hurtTime <= 0 }
-        } else {
-            inRange
-        }
-        if (validTargets.isEmpty()) {
-            event.cancelAndReplace(pkt)
-            return
-        }
-
-        // ── Eat stop ────────────────────────────────────
-        // TODO: Implement eating state tracking via entity metadata
-        // For now, eatStop setting is available but not functional until
-        // EntityTracker provides eating state information
-        if (eatStop.value) {
-            // Eating check disabled: EntityTracker.selfEating property does not exist
-            // This will be implemented once eating state is tracked in EntityTracker
-        }
-
-        // ── CA Compatibility ────────────────────────────
-        if (caCompatibility.value) {
-            // maybe adjust timing to avoid conflict with CrystalAura
-        }
-
-        val attackCount = if (packetAttack.value) packetAmount.value else 1
-        val hitChanceVal = hitChance.value
-
-        scope.launch {
-            if (needsCrit) {
-                if (CritLock.tryAcquire(CRIT_LOCK_KEY)) {
-                    try {
-                        when (critMode.value) {
-                            CritMode.Fast      -> injectCritFastUp(session)
-                            CritMode.UltraFast -> injectCritUltraFastUp(session)
-                            CritMode.None      -> {}
-                        }
-
-                        repeat(hitAttempts.value) {
-                            if (!packetAttack.value) {
-                                PacketUtil.sendSwing(session)
-                            }
-                            validTargets.forEach { t ->
-                                if (Random.nextInt(100) < hitChanceVal) {
-                                    repeat(attackCount) {
-                                        val click = Vector3f.from(t.x, t.y + 1.5f, t.z)
-                                        PacketUtil.sendAttack(session, t.runtimeId, slot, click)
-                                    }
-                                }
-                            }
-                        }
-
-                        if (critMode.value != CritMode.None) {
-                            PacketUtil.sendMoveAtSelf(session, dyOffset = 0f, onGround = true)
-                        }
-                    } finally {
-                        CritLock.release(CRIT_LOCK_KEY)
-                    }
-                }
-            } else {
-                repeat(hitAttempts.value) {
-                    if (!packetAttack.value) {
-                        PacketUtil.sendSwing(session)
-                    }
-                    validTargets.forEach { t ->
-                        if (Random.nextInt(100) < hitChanceVal) {
-                            repeat(attackCount) {
-                                val click = Vector3f.from(t.x, t.y + 1.5f, t.z)
-                                PacketUtil.sendAttack(session, t.runtimeId, slot, click)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        lastAttackMs = System.currentTimeMillis()
-        attackCounter++
+        // Optional: if you want to attack in onPacket as well, you can call performAttack here,
+        // but we already attack in tickLoop.
         event.cancelAndReplace(pkt)
     }
 
     private fun isInRange(target: EntityTracker.TrackedEntity): Boolean {
         val dist = MathUtil.dist3(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ,
             target.x, target.y, target.z)
-        return dist <= range.value || (dist <= range.value + wallRange.value)
+        return dist <= range.value + wallRange.value
     }
 
-    private fun tpAuraRecentlyMoved(): Boolean =
-        System.currentTimeMillis() - TPAura.lastPositionOverrideMs < TPAURA_CONFLICT_WINDOW_MS
-
-    private suspend fun injectCritFastUp(s: RubidiumRelaySession) {
-        PacketUtil.sendMoveAtSelf(s, dyOffset = 0.42f, onGround = false)
-        delay(10L)
-        PacketUtil.sendMoveAtSelf(s, dyOffset = 0.0f, onGround = false)
-        delay(5L)
-    }
-
-    private suspend fun injectCritUltraFastUp(s: RubidiumRelaySession) {
-        PacketUtil.sendMoveAtSelf(s, dyOffset = 0.42f, onGround = false)
-        delay(5L)
-    }
+    private fun tpAuraRecentlyMoved(): Boolean = false
 }
