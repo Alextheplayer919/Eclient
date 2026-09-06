@@ -20,7 +20,7 @@ import kotlin.random.Random
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura attack + manual orbit (distance enforced)"
+    description = "WAura attack + manual orbit (reliable)"
 ), PacketEventBus.PacketListener {
 
     // ── WAura attack settings ──────────────────────────────
@@ -34,9 +34,9 @@ class KillAura : BaseModule(
 
     // ── Orbit settings ──────────────────────────────────────
     private val orbitEnabled     = bool("Orbit",          false)
-    private val orbitRange       = float("Orbit Range",   6f,   1.5f, 25f)   // ⬅️ THIS SLIDER IS ENFORCED
-    private val orbitSpeed       = float("Orbit Speed",   8f,   1f,   30f)   // degrees per tick when A/D pressed
-    private val orbitMoveSpeed   = float("Move Speed",    2.0f,  0.5f, 6f)   // blocks per tick (higher = faster to reach)
+    private val orbitRange       = float("Orbit Range",   6f,   1.5f, 25f)   // ⬅️ ENFORCED
+    private val orbitSpeed       = float("Orbit Speed",   8f,   1f,   30f)   // degrees per tick when pressing A/D
+    private val orbitMoveSpeed   = float("Move Speed",    2.0f,  0.5f, 6f)   // blocks per tick (higher = faster snap)
     private val orbitStopDist    = float("Stop Distance", 100f,  10f,  200f) // max distance to orbit
 
     // ── Rotation ────────────────────────────────────────────
@@ -47,7 +47,7 @@ class KillAura : BaseModule(
 
     companion object {
         private const val TARGET_SCAN_INTERVAL = 100L
-        private const val POSITION_TOLERANCE = 0.05f   // very tight tolerance
+        private const val POSITION_TOLERANCE = 0.05f   // tight tolerance
     }
 
     // ── State ─────────────────────────────────────────────────
@@ -136,37 +136,41 @@ class KillAura : BaseModule(
         }
     }
 
-    // ── Orbit with strict distance enforcement ──────────────
+    // ── Orbit (aggressive distance enforcement) ──────────────
     private fun applyOrbit(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         val distToTarget = MathUtil.dist3(selfPos.x, selfPos.y, selfPos.z, target.x, target.y, target.z)
 
-        if (distToTarget > orbitStopDist.value) return
+        // If target is too far, stop orbiting (but allow recovery)
+        if (distToTarget > orbitStopDist.value) {
+            return
+        }
 
-        // Read A/D input
+        // Read A/D input (immune to Fly)
         var strafeInput = 0f
         if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) strafeInput = -1f
         else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) strafeInput = 1f
 
+        // Update orbit angle only when input is pressed
         if (strafeInput != 0f) {
             orbitAngle += strafeInput * orbitSpeed.value
             orbitAngle %= 360f
         }
 
-        // Desired position on the circle with EXACT orbitRange
+        // Compute desired position on the circle at EXACT orbitRange
         val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
         val desiredX = target.x + cos(rad) * orbitRange.value
         val desiredZ = target.z + sin(rad) * orbitRange.value
-        val desiredY = target.y + 0.2f
+        val desiredY = target.y + 0.2f   // slightly above feet
 
-        // Move toward desired position stepwise, then snap if close
+        // Move toward desired position (or snap if close)
         val dx = desiredX - selfPos.x
         val dy = desiredY - selfPos.y
         val dz = desiredZ - selfPos.z
         val totalDist = sqrt(dx * dx + dy * dy + dz * dz)
 
         val newPos = if (totalDist <= POSITION_TOLERANCE) {
-            // Exactly at desired position – stay there
+            // Exactly at desired – stay there
             Vector3f.from(desiredX, desiredY, desiredZ)
         } else {
             // Step toward desired position
@@ -178,9 +182,8 @@ class KillAura : BaseModule(
             )
         }
 
-        // Override packet position
+        // Override packet position and update tracker
         pkt.position = newPos
-        // Update tracker
         EntityTracker.selfX = newPos.x
         EntityTracker.selfY = newPos.y
         EntityTracker.selfZ = newPos.z
