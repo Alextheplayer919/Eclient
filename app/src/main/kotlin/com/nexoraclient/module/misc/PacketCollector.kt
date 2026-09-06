@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 class PacketCollector : BaseModule(
     name        = "PacketCollector",
     category    = ModuleCategory.MISC,
-    description = "Detailed packet logger – separate files per packet type"
+    description = "Packet logger – only creates files when enabled and packets arrive"
 ), PacketEventBus.PacketListener {
 
     private val logDetailed     = bool("Detailed Log",       true)
@@ -25,6 +25,7 @@ class PacketCollector : BaseModule(
     private val maxLinesPerFile = int ("Max Lines/File",     50000, 1000, 200000)
     private val autoFlush       = bool("Auto Flush",         true)
     private val flushInterval   = int ("Flush Interval (ms)",5000,  1000, 30000)
+    private val deleteOnDisable = bool("Delete On Disable",  false)   // optional: delete all logs when disabled
 
     private val baseDir by lazy { getLogDirectory() }
     private val writers = ConcurrentHashMap<String, PrintWriter>()
@@ -32,6 +33,7 @@ class PacketCollector : BaseModule(
     private var flushJob: Job? = null
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
     private val writeScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var dirCreated = false
 
     private val spamPackets = setOf(
         "MoveEntityAbsolutePacket",
@@ -42,20 +44,16 @@ class PacketCollector : BaseModule(
 
     override fun onEnable() {
         super.onEnable()
-        try {
-            File(baseDir).mkdirs()
-            PacketEventBus.register(this)
-            if (autoFlush.value) {
-                flushJob = writeScope.launch {
-                    while (isActive) {
-                        delay(flushInterval.value.toLong())
-                        writers.values.forEach { it.flush() }
-                    }
+        // Reset state – do NOT create directory here
+        dirCreated = false
+        PacketEventBus.register(this)
+        if (autoFlush.value) {
+            flushJob = writeScope.launch {
+                while (isActive) {
+                    delay(flushInterval.value.toLong())
+                    writers.values.forEach { it.flush() }
                 }
             }
-        } catch (e: Exception) {
-            println("PacketCollector: Failed to init: ${e.message}")
-            setEnabled(false)
         }
     }
 
@@ -66,16 +64,32 @@ class PacketCollector : BaseModule(
             writers.values.forEach { it.close() }
             writers.clear()
             lineCounts.clear()
+            if (deleteOnDisable.value) {
+                val dir = File(baseDir)
+                if (dir.exists()) {
+                    dir.deleteRecursively()
+                }
+                dirCreated = false
+            }
         }
         super.onDisable()
     }
 
     override fun onPacket(event: PacketEvent) {
+        // 🔥 CRITICAL: only process if module is ENABLED
         if (!isEnabled) return
+
         val pkt = event.packet
         val className = pkt.javaClass.simpleName
 
         if (excludeSpam.value && spamPackets.contains(className)) return
+
+        // ── Lazy directory creation ──────────────────────────
+        if (!dirCreated) {
+            val dir = File(baseDir)
+            dir.mkdirs()
+            dirCreated = true
+        }
 
         val dir = if (event.direction == PacketEvent.Direction.CLIENT_TO_SERVER) "CLIENT→SERVER" else "SERVER→CLIENT"
         val ts = dateFormat.format(Date())
@@ -147,18 +161,15 @@ class PacketCollector : BaseModule(
                 "type=${pkt.type} | message=${pkt.message.take(50)}"
             }
             is LevelChunkPacket -> {
-                // ✅ safe: chunkX and chunkZ exist
                 "chunkX=${pkt.chunkX} | chunkZ=${pkt.chunkZ}"
             }
             is UpdateBlockPacket -> {
-                // ✅ safe: blockPosition and flags exist
                 "pos=(${pkt.blockPosition.x}, ${pkt.blockPosition.y}, ${pkt.blockPosition.z}) | flags=${pkt.flags}"
             }
             is AddEntityPacket -> {
                 "eid=${pkt.runtimeEntityId} | type=${pkt.entityType} | pos=(${pkt.position.x}, ${pkt.position.y}, ${pkt.position.z}) | rot=(${pkt.rotation.x}, ${pkt.rotation.y})"
             }
             is RemoveEntityPacket -> {
-                // FIX: RemoveEntityPacket exposes uniqueEntityId, not runtimeEntityId
                 "eid=${pkt.uniqueEntityId}"
             }
             is SetEntityDataPacket -> {
