@@ -157,7 +157,7 @@ class KillAura : BaseModule(
         var basePitch = rot.pitch
 
         // Apply aim position offset
-        when (aimPosMode) {
+        when (aimPosMode.value) {
             1 -> basePitch += 0.5f   // chest
             2 -> basePitch += 1.5f   // feet
         }
@@ -193,7 +193,7 @@ class KillAura : BaseModule(
             }
             RotMode.Vortex -> {
                 // Pattern-based jitter
-                val pattern = when (vortexMode) {
+                val pattern = when (vortexMode.value) {
                     1 -> sin(attackCounter * 0.1f) * jitterIntensity.value
                     2 -> sin(attackCounter * 0.05f) * jitterIntensity.value * 0.5f
                     3 -> (Random.nextFloat() - 0.5f) * jitterIntensity.value * 2f
