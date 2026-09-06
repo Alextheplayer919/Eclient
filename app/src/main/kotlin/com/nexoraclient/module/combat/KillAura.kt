@@ -14,14 +14,13 @@ import kotlinx.coroutines.*
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
-import org.cloudburstmc.protocol.bedrock.packet.SetEntityMotionPacket
 import kotlin.math.*
 import kotlin.random.Random
 
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura attack + manual orbit (A/D input via inputData)"
+    description = "WAura attack + manual orbit (distance enforced)"
 ), PacketEventBus.PacketListener {
 
     // ── WAura attack settings ──────────────────────────────
@@ -34,10 +33,11 @@ class KillAura : BaseModule(
     private val switchDelay   = int  ("Switch Delay",100,  20,  1000)
 
     // ── Orbit settings ──────────────────────────────────────
-    private val orbitEnabled  = bool("Orbit",         false)
-    private val orbitRange    = float("Orbit Range",  6f,   2f,   20f)   // radius
-    private val orbitSpeed    = float("Orbit Speed",  6f,   0.5f, 20f)   // more responsive
-    private val orbitStopDist = float("Stop Distance",50f,  4f,   100f)  // works from far away
+    private val orbitEnabled     = bool("Orbit",          false)
+    private val orbitRange       = float("Orbit Range",   6f,   1.5f, 25f)   // ⬅️ THIS SLIDER IS ENFORCED
+    private val orbitSpeed       = float("Orbit Speed",   8f,   1f,   30f)   // degrees per tick when A/D pressed
+    private val orbitMoveSpeed   = float("Move Speed",    2.0f,  0.5f, 6f)   // blocks per tick (higher = faster to reach)
+    private val orbitStopDist    = float("Stop Distance", 100f,  10f,  200f) // max distance to orbit
 
     // ── Rotation ────────────────────────────────────────────
     private val silentRot     = bool("Silent Rotation", true)
@@ -47,7 +47,7 @@ class KillAura : BaseModule(
 
     companion object {
         private const val TARGET_SCAN_INTERVAL = 100L
-        private const val ORBIT_TOLERANCE = 0.3f
+        private const val POSITION_TOLERANCE = 0.05f   // very tight tolerance
     }
 
     // ── State ─────────────────────────────────────────────────
@@ -136,53 +136,54 @@ class KillAura : BaseModule(
         }
     }
 
-    // ── Orbit (manual, using inputData for A/D) ─────────────
+    // ── Orbit with strict distance enforcement ──────────────
     private fun applyOrbit(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         val distToTarget = MathUtil.dist3(selfPos.x, selfPos.y, selfPos.z, target.x, target.y, target.z)
 
         if (distToTarget > orbitStopDist.value) return
 
-        // Read strafe from inputData (immune to Fly packet modifications)
+        // Read A/D input
         var strafeInput = 0f
         if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) strafeInput = -1f
         else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) strafeInput = 1f
 
-        if (strafeInput == 0f) return
+        if (strafeInput != 0f) {
+            orbitAngle += strafeInput * orbitSpeed.value
+            orbitAngle %= 360f
+        }
 
-        orbitAngle += strafeInput * orbitSpeed.value
-        orbitAngle %= 360f
-
+        // Desired position on the circle with EXACT orbitRange
         val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
-        val targetX = target.x + cos(rad) * orbitRange.value
-        val targetZ = target.z + sin(rad) * orbitRange.value
-        val targetY = target.y + 0.2f
+        val desiredX = target.x + cos(rad) * orbitRange.value
+        val desiredZ = target.z + sin(rad) * orbitRange.value
+        val desiredY = target.y + 0.2f
 
-        val dx = targetX - selfPos.x
-        val dz = targetZ - selfPos.z
-        val dy = targetY - selfPos.y
-        val horizDist = sqrt(dx * dx + dz * dz)
+        // Move toward desired position stepwise, then snap if close
+        val dx = desiredX - selfPos.x
+        val dy = desiredY - selfPos.y
+        val dz = desiredZ - selfPos.z
         val totalDist = sqrt(dx * dx + dy * dy + dz * dz)
 
-        if (totalDist > ORBIT_TOLERANCE) {
-            val speed = 0.5f
-            var motionX = 0f
-            var motionZ = 0f
-            var motionY = 0f
-
-            if (horizDist > 0.1f) {
-                val normX = dx / horizDist
-                val normZ = dz / horizDist
-                motionX = normX * speed
-                motionZ = normZ * speed
-            }
-            motionY = dy.coerceIn(-0.2f, 0.2f)
-
-            val motionPacket = SetEntityMotionPacket()
-            motionPacket.runtimeEntityId = EntityTracker.selfRuntimeId
-            motionPacket.motion = Vector3f.from(motionX, motionY, motionZ)
-            session.clientBound(motionPacket)
+        val newPos = if (totalDist <= POSITION_TOLERANCE) {
+            // Exactly at desired position – stay there
+            Vector3f.from(desiredX, desiredY, desiredZ)
+        } else {
+            // Step toward desired position
+            val step = min(orbitMoveSpeed.value, totalDist)
+            Vector3f.from(
+                selfPos.x + dx / totalDist * step,
+                selfPos.y + dy / totalDist * step,
+                selfPos.z + dz / totalDist * step
+            )
         }
+
+        // Override packet position
+        pkt.position = newPos
+        // Update tracker
+        EntityTracker.selfX = newPos.x
+        EntityTracker.selfY = newPos.y
+        EntityTracker.selfZ = newPos.z
     }
 
     // ── Attack ─────────────────────────────────────────────────
@@ -225,18 +226,22 @@ class KillAura : BaseModule(
             return
         }
 
+        // ── Rotation ──────────────────────────────────────────
         updateRotation(primary, pkt)
 
+        // ── Orbit ──────────────────────────────────────────────
         if (orbitEnabled.value) {
             applyOrbit(session, primary, pkt)
         }
 
+        // ── Attack timing ────────────────────────────────────
         val attackDelay = 1_000_000_000L / cps.value
         if (nowNs - lastAttackNs < attackDelay) {
             event.cancelAndReplace(pkt)
             return
         }
 
+        // ── Attack ─────────────────────────────────────────────
         val targetsToHit = when (targetMode.value) {
             0, 1 -> listOfNotNull(primary)
             else -> cachedTargets
