@@ -179,7 +179,8 @@ class KillAura : BaseModule(
                     target.y + 0.2f + offsetY,
                     target.z + offsetZ
                 )
-                val edgeRot = RotationUtil.toEntity(edgePos.x, edgePos.y, edgePos.z)
+                // Use toPoint for coordinate-based rotation calculation
+                val edgeRot = RotationUtil.toPoint(edgePos.x, edgePos.y, edgePos.z)
                 targetYaw = edgeRot.yaw
                 targetPitch = edgeRot.pitch
             }
