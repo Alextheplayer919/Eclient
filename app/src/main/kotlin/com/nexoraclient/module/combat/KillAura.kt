@@ -303,9 +303,12 @@ class KillAura : BaseModule(
         }
 
         // ── Eat stop ────────────────────────────────────
-        if (eatStop.value && EntityTracker.selfEating) {
-            event.cancelAndReplace(pkt)
-            return
+        // TODO: Implement eating state tracking via entity metadata
+        // For now, eatStop setting is available but not functional until
+        // EntityTracker provides eating state information
+        if (eatStop.value) {
+            // Eating check disabled: EntityTracker.selfEating property does not exist
+            // This will be implemented once eating state is tracked in EntityTracker
         }
 
         // ── CA Compatibility ────────────────────────────
