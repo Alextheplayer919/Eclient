@@ -20,7 +20,7 @@ import kotlin.random.Random
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura attack + manual orbit (reliable)"
+    description = "WAura attack + orbit + advanced KillAura2 rotations"
 ), PacketEventBus.PacketListener {
 
     // ── WAura attack settings ──────────────────────────────
@@ -34,12 +34,22 @@ class KillAura : BaseModule(
 
     // ── Orbit settings ──────────────────────────────────────
     private val orbitEnabled     = bool("Orbit",          false)
-    private val orbitRange       = float("Orbit Range",   6f,   1.5f, 25f)   // ⬅️ ENFORCED
-    private val orbitSpeed       = float("Orbit Speed",   8f,   1f,   30f)   // degrees per tick when pressing A/D
-    private val orbitMoveSpeed   = float("Move Speed",    2.0f,  0.5f, 6f)   // blocks per tick (higher = faster snap)
-    private val orbitStopDist    = float("Stop Distance", 100f,  10f,  200f) // max distance to orbit
+    private val orbitRange       = float("Orbit Range",   6f,   1.5f, 25f)
+    private val orbitSpeed       = float("Orbit Speed",   8f,   1f,   30f)
+    private val orbitMoveSpeed   = float("Move Speed",    2.0f,  0.5f, 6f)
+    private val orbitStopDist    = float("Stop Distance", 100f,  10f,  200f)
 
-    // ── Rotation ────────────────────────────────────────────
+    // ── Advanced rotation settings (KillAura2) ─────────────
+    private val rotMode        = int("Rotation Mode", 1, 0, 3)          // 0=None, 1=Normal, 2=Strafe, 3=Edge
+    private val metaRotMode    = int("Meta Rotation", 0, 0, 1)          // 0=Normal, 1=Server-side (stub)
+    private val vortexMode     = int("Vortex Mode", 0, 0, 3)            // 0=Off, 1=Counteract, 2=Jitter, 3=Adapt
+    private val jitterIntensity= float("Jitter Int", 2.0f, 0f, 10f)
+    private val aimSmoothness  = float("Smoothness", 80f, 0f, 100f)
+    private val offsetY        = int("Y Offset", 0, -30, 30)
+    private val antiKillaura   = bool("Anti KA", false)
+    private val antiKARange    = float("Anti KA Range", 2f, 0f, 5f)
+
+    // ── Base settings ──────────────────────────────────────
     private val silentRot     = bool("Silent Rotation", true)
     private val ignoreFriends = bool("Ignore Friends", true)
     private val antiBot       = bool("Anti Bot",       true)
@@ -47,7 +57,7 @@ class KillAura : BaseModule(
 
     companion object {
         private const val TARGET_SCAN_INTERVAL = 100L
-        private const val POSITION_TOLERANCE = 0.05f   // tight tolerance
+        private const val POSITION_TOLERANCE = 0.05f
     }
 
     // ── State ─────────────────────────────────────────────────
@@ -60,6 +70,11 @@ class KillAura : BaseModule(
     @Volatile private var headLockYaw    = 0f
     @Volatile private var headLockPitch  = 0f
     @Volatile private var orbitAngle     = 0f
+
+    // Rotation smoothing state
+    private var lastYaw = 0f
+    private var lastPitch = 0f
+    private var strafeAngle = 0f
 
     private var tickJob: Job? = null
 
@@ -74,6 +89,9 @@ class KillAura : BaseModule(
         headLockYaw    = EntityTracker.selfYaw
         headLockPitch  = EntityTracker.selfPitch
         orbitAngle     = Random.nextFloat() * 360f
+        lastYaw        = EntityTracker.selfYaw
+        lastPitch      = EntityTracker.selfPitch
+        strafeAngle    = 0f
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -123,17 +141,115 @@ class KillAura : BaseModule(
 
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
 
-    // ── Rotation ──────────────────────────────────────────────
-    private fun updateRotation(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        val rot = RotationUtil.toEntity(target)
-        headLockYaw = rot.yaw
-        headLockPitch = rot.pitch
-        pkt.rotation = Vector3f.from(headLockPitch, headLockYaw, headLockYaw)
+    // ── Advanced rotation calculation (KillAura2 style) ────
+    private fun calculateRotation(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
+        // 1. Base aim position
+        val aimPos = Vector3f.from(target.x, target.y + 1.5f, target.z) // eyes
+        // (if you want body aim, adjust accordingly – we keep eyes by default)
 
-        if (!silentRot.value) {
-            EntityTracker.selfYaw = headLockYaw
-            EntityTracker.selfPitch = headLockPitch
+        // 2. Base rotation
+        val rot = RotationUtil.toEntity(target)
+        var targetYaw = rot.yaw
+        var targetPitch = rot.pitch
+
+        // 3. Y offset
+        targetPitch += offsetY.value
+
+        // 4. Rotation modes: Strafe / Edge
+        when (rotMode.value) {
+            1 -> { /* Normal – nothing extra */ }
+            2 -> { // Strafe – circular aim around target
+                strafeAngle += 5f
+                if (strafeAngle >= 360f) strafeAngle -= 360f
+                val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
+                targetYaw += sin(rad) * 5f // amplitude (can be tuned)
+            }
+            3 -> { // Edge – aim at hitbox corners
+                // Simplified: approximate half-width/height
+                val halfWidth = 0.3f
+                val halfHeight = 0.9f
+                strafeAngle += 5f
+                if (strafeAngle >= 360f) strafeAngle -= 360f
+                val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
+                val offsetX = cos(rad) * halfWidth
+                val offsetZ = sin(rad) * halfWidth
+                val offsetY = sin(rad * 2) * halfHeight * 0.5f
+                val edgePos = Vector3f.from(
+                    target.x + offsetX,
+                    target.y + 0.2f + offsetY,
+                    target.z + offsetZ
+                )
+                val edgeRot = RotationUtil.toEntity(edgePos.x, edgePos.y, edgePos.z)
+                targetYaw = edgeRot.yaw
+                targetPitch = edgeRot.pitch
+            }
         }
+
+        // 5. Vortex modes (no target history, simple jitter patterns)
+        when (vortexMode.value) {
+            1 -> { // Counteract – small random jitter
+                val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
+                val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.25f
+                targetYaw += jx
+                targetPitch += jy
+            }
+            2 -> { // Jitter – larger random offset
+                val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value
+                val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
+                targetYaw += jx
+                targetPitch += jy
+            }
+            3 -> { // Adapt – jitter at close range, counteract at distance
+                val dist = MathUtil.dist3(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ,
+                    target.x, target.y, target.z)
+                if (dist < 4f) {
+                    val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value
+                    val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
+                    targetYaw += jx
+                    targetPitch += jy
+                } else {
+                    val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.3f
+                    val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.15f
+                    targetYaw += jx
+                    targetPitch += jy
+                }
+            }
+        }
+
+        // 6. Anti‑Killaura (aim behind target when very close)
+        if (antiKillaura.value) {
+            val distXZ = MathUtil.dist2(EntityTracker.selfX, EntityTracker.selfZ, target.x, target.z)
+            if (distXZ < antiKARange.value) {
+                // Aim 180° behind the target
+                targetYaw += 180f
+                targetPitch *= 0.5f
+            }
+        }
+
+        // 7. Normalize angles (clamp pitch, wrap yaw)
+        var normalizedYaw = targetYaw
+        while (normalizedYaw > 180f) normalizedYaw -= 360f
+        while (normalizedYaw < -180f) normalizedYaw += 360f
+        val normalizedPitch = targetPitch.coerceIn(-89f, 89f)
+
+        // 8. Smoothness (interpolation)
+        val smoothFactor = aimSmoothness.value / 100f
+        val smoothedYaw = lastYaw + (normalizedYaw - lastYaw) * smoothFactor
+        val smoothedPitch = lastPitch + (normalizedPitch - lastPitch) * smoothFactor
+
+        // Store for next tick
+        lastYaw = smoothedYaw
+        lastPitch = smoothedPitch
+
+        // 9. Apply to packet
+        pkt.rotation = Vector3f.from(smoothedPitch, smoothedYaw, smoothedYaw)
+        if (!silentRot.value) {
+            EntityTracker.selfYaw = smoothedYaw
+            EntityTracker.selfPitch = smoothedPitch
+        }
+        // Also update headLockYaw/Pitch for other uses
+        headLockYaw = smoothedYaw
+        headLockPitch = smoothedPitch
     }
 
     // ── Orbit (aggressive distance enforcement) ──────────────
@@ -141,39 +257,30 @@ class KillAura : BaseModule(
         val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         val distToTarget = MathUtil.dist3(selfPos.x, selfPos.y, selfPos.z, target.x, target.y, target.z)
 
-        // If target is too far, stop orbiting (but allow recovery)
-        if (distToTarget > orbitStopDist.value) {
-            return
-        }
+        if (distToTarget > orbitStopDist.value) return
 
-        // Read A/D input (immune to Fly)
         var strafeInput = 0f
         if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) strafeInput = -1f
         else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) strafeInput = 1f
 
-        // Update orbit angle only when input is pressed
         if (strafeInput != 0f) {
             orbitAngle += strafeInput * orbitSpeed.value
             orbitAngle %= 360f
         }
 
-        // Compute desired position on the circle at EXACT orbitRange
         val rad = Math.toRadians(orbitAngle.toDouble()).toFloat()
         val desiredX = target.x + cos(rad) * orbitRange.value
         val desiredZ = target.z + sin(rad) * orbitRange.value
-        val desiredY = target.y + 0.2f   // slightly above feet
+        val desiredY = target.y + 0.2f
 
-        // Move toward desired position (or snap if close)
         val dx = desiredX - selfPos.x
         val dy = desiredY - selfPos.y
         val dz = desiredZ - selfPos.z
         val totalDist = sqrt(dx * dx + dy * dy + dz * dz)
 
         val newPos = if (totalDist <= POSITION_TOLERANCE) {
-            // Exactly at desired – stay there
             Vector3f.from(desiredX, desiredY, desiredZ)
         } else {
-            // Step toward desired position
             val step = min(orbitMoveSpeed.value, totalDist)
             Vector3f.from(
                 selfPos.x + dx / totalDist * step,
@@ -182,7 +289,6 @@ class KillAura : BaseModule(
             )
         }
 
-        // Override packet position and update tracker
         pkt.position = newPos
         EntityTracker.selfX = newPos.x
         EntityTracker.selfY = newPos.y
@@ -229,8 +335,8 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Rotation ──────────────────────────────────────────
-        updateRotation(primary, pkt)
+        // ── Advanced rotation ──────────────────────────────────
+        calculateRotation(primary, pkt)
 
         // ── Orbit ──────────────────────────────────────────────
         if (orbitEnabled.value) {
@@ -244,7 +350,6 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Attack ─────────────────────────────────────────────
         val targetsToHit = when (targetMode.value) {
             0, 1 -> listOfNotNull(primary)
             else -> cachedTargets
