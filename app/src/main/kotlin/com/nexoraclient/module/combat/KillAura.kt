@@ -49,6 +49,10 @@ class KillAura : BaseModule(
     private val antiKillaura   = bool("Anti KA", false)
     private val antiKARange    = float("Anti KA Range", 2f, 0f, 5f)
 
+    // ── NEW: Prediction & shrinkbox ──────────────────────
+    private val predictTicks   = int  ("Predict Ticks",  1,   0,   5)
+    private val shrinkbox      = float("Shrinkbox",      0.8f, 0.2f, 1.2f)
+
     // ── Base settings ──────────────────────────────────────
     private val silentRot     = bool("Silent Rotation", true)
     private val ignoreFriends = bool("Ignore Friends", true)
@@ -76,6 +80,9 @@ class KillAura : BaseModule(
     private var lastPitch = 0f
     private var strafeAngle = 0f
 
+    // Target history for prediction
+    private val targetHistory = mutableListOf<Pair<Float, Float>>()
+
     private var tickJob: Job? = null
 
     override fun onEnable() {
@@ -92,6 +99,7 @@ class KillAura : BaseModule(
         lastYaw        = EntityTracker.selfYaw
         lastPitch      = EntityTracker.selfPitch
         strafeAngle    = 0f
+        targetHistory.clear()
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -141,31 +149,59 @@ class KillAura : BaseModule(
 
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
 
-    // ── Advanced rotation calculation (KillAura2 style) ────
+    // ── Advanced rotation calculation with prediction & shrinkbox ────
     private fun calculateRotation(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        // 1. Base aim position
-        val aimPos = Vector3f.from(target.x, target.y + 1.5f, target.z) // eyes
-        // (if you want body aim, adjust accordingly – we keep eyes by default)
+        // 1. Base aim position (eyes)
+        var aimX = target.x
+        var aimY = target.y + 1.5f
+        var aimZ = target.z
 
-        // 2. Base rotation
-        val rot = RotationUtil.toEntity(target)
+        // ── Prediction ──────────────────────────────────────
+        if (predictTicks.value > 0 && targetHistory.size >= 2) {
+            // Compute velocity from last two positions
+            val last = targetHistory.last()
+            val prev = targetHistory[targetHistory.size - 2]
+            val velX = last.first - prev.first
+            val velZ = last.second - prev.second
+            // Predict ahead by predictTicks * 0.05 (each tick ~50ms)
+            val dt = predictTicks.value * 0.05f
+            aimX += velX * dt
+            aimZ += velZ * dt
+        }
+        // Update history (store current position)
+        targetHistory.add(Pair(target.x, target.z))
+        if (targetHistory.size > 5) targetHistory.removeFirst() // keep last 5
+
+        // ── Shrinkbox ──────────────────────────────────────
+        // Shrink the horizontal vector from target center to aim point
+        val centerX = target.x
+        val centerZ = target.z
+        val deltaX = aimX - centerX
+        val deltaZ = aimZ - centerZ
+        aimX = centerX + deltaX * shrinkbox.value
+        aimZ = centerZ + deltaZ * shrinkbox.value
+        // Keep Y unchanged (eyes height)
+
+        // 2. Base rotation to the (possibly predicted & shrunk) aim position
+        // We need to calculate rotation to (aimX, aimY, aimZ)
+        // We'll use a helper to get rotation from self to that point
+        val rot = RotationUtil.toPoint(aimX, aimY, aimZ)
         var targetYaw = rot.yaw
         var targetPitch = rot.pitch
 
-        // 3. Y offset
+        // 3. Y offset (adjust pitch)
         targetPitch += offsetY.value
 
-        // 4. Rotation modes: Strafe / Edge
+        // 4. Rotation modes: Strafe / Edge (unchanged)
         when (rotMode.value) {
             1 -> { /* Normal – nothing extra */ }
             2 -> { // Strafe – circular aim around target
                 strafeAngle += 5f
                 if (strafeAngle >= 360f) strafeAngle -= 360f
                 val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
-                targetYaw += sin(rad) * 5f // amplitude (can be tuned)
+                targetYaw += sin(rad) * 5f // amplitude
             }
             3 -> { // Edge – aim at hitbox corners
-                // Simplified: approximate half-width/height
                 val halfWidth = 0.3f
                 val halfHeight = 0.9f
                 strafeAngle += 5f
@@ -179,28 +215,27 @@ class KillAura : BaseModule(
                     target.y + 0.2f + offsetY,
                     target.z + offsetZ
                 )
-                // Use toPoint for coordinate-based rotation calculation
                 val edgeRot = RotationUtil.toPoint(edgePos.x, edgePos.y, edgePos.z)
                 targetYaw = edgeRot.yaw
                 targetPitch = edgeRot.pitch
             }
         }
 
-        // 5. Vortex modes (no target history, simple jitter patterns)
+        // 5. Vortex modes (unchanged)
         when (vortexMode.value) {
-            1 -> { // Counteract – small random jitter
+            1 -> {
                 val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
                 val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.25f
                 targetYaw += jx
                 targetPitch += jy
             }
-            2 -> { // Jitter – larger random offset
+            2 -> {
                 val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value
                 val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
                 targetYaw += jx
                 targetPitch += jy
             }
-            3 -> { // Adapt – jitter at close range, counteract at distance
+            3 -> {
                 val dist = MathUtil.dist3(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ,
                     target.x, target.y, target.z)
                 if (dist < 4f) {
@@ -217,28 +252,26 @@ class KillAura : BaseModule(
             }
         }
 
-        // 6. Anti‑Killaura (aim behind target when very close)
+        // 6. Anti‑Killaura (unchanged)
         if (antiKillaura.value) {
             val distXZ = MathUtil.dist2(EntityTracker.selfX, EntityTracker.selfZ, target.x, target.z)
             if (distXZ < antiKARange.value) {
-                // Aim 180° behind the target
                 targetYaw += 180f
                 targetPitch *= 0.5f
             }
         }
 
-        // 7. Normalize angles (clamp pitch, wrap yaw)
+        // 7. Normalize angles
         var normalizedYaw = targetYaw
         while (normalizedYaw > 180f) normalizedYaw -= 360f
         while (normalizedYaw < -180f) normalizedYaw += 360f
         val normalizedPitch = targetPitch.coerceIn(-89f, 89f)
 
-        // 8. Smoothness (interpolation)
+        // 8. Smoothness
         val smoothFactor = aimSmoothness.value / 100f
         val smoothedYaw = lastYaw + (normalizedYaw - lastYaw) * smoothFactor
         val smoothedPitch = lastPitch + (normalizedPitch - lastPitch) * smoothFactor
 
-        // Store for next tick
         lastYaw = smoothedYaw
         lastPitch = smoothedPitch
 
@@ -248,12 +281,11 @@ class KillAura : BaseModule(
             EntityTracker.selfYaw = smoothedYaw
             EntityTracker.selfPitch = smoothedPitch
         }
-        // Also update headLockYaw/Pitch for other uses
         headLockYaw = smoothedYaw
         headLockPitch = smoothedPitch
     }
 
-    // ── Orbit (aggressive distance enforcement) ──────────────
+    // ── Orbit (unchanged) ──────────────────────────────────
     private fun applyOrbit(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         val distToTarget = MathUtil.dist3(selfPos.x, selfPos.y, selfPos.z, target.x, target.y, target.z)
@@ -305,6 +337,7 @@ class KillAura : BaseModule(
 
         if (cachedTargets.isEmpty()) {
             currentTarget = null
+            targetHistory.clear()
             event.cancelAndReplace(pkt)
             return
         }
@@ -316,6 +349,7 @@ class KillAura : BaseModule(
             0 -> {
                 if (currentTarget == null || !cachedTargets.contains(currentTarget)) {
                     currentTarget = cachedTargets.firstOrNull()
+                    targetHistory.clear() // target changed, clear history
                 }
                 currentTarget
             }
@@ -324,6 +358,7 @@ class KillAura : BaseModule(
                     switchIndex = (switchIndex + 1) % cachedTargets.size
                     currentTarget = cachedTargets[switchIndex]
                     lastSwitchMs = nowMs
+                    targetHistory.clear() // target switched
                 }
                 currentTarget
             }
