@@ -20,40 +20,45 @@ import kotlin.random.Random
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "WAura attack + orbit + advanced KillAura2 rotations"
+    description = "KillAura3 rotations + Quantum + Attack features (hitAttempts, packetAttack, wallRange)"
 ), PacketEventBus.PacketListener {
 
-    // ── WAura attack settings ──────────────────────────────
+    // ── Attack settings (WAura + KillAura3 extras) ────────
+    private val attackMode     = int("Attack Mode", 0, 0, 1)    // 0=CPS, 1=Interval (ticks)
+    private val cps            = int("CPS",          25, 1, 50)
+    private val intervalTicks  = int("Interval",      1, 0, 20) // ticks between attacks
+    private val boost          = int("Packets",      2, 1, 10)   // packets per hit
+    private val hitAttempts    = int("Hit Attempts", 1, 1, 5)    // attacks per tick (KillAura3)
+    private val packetAttack   = bool("Packet Attack", false)    // use packet attack (KillAura3)
+    private val hitChance      = int("Hit Chance",   100, 0, 100)
+
+    // ── Range settings ──────────────────────────────────────
     private val playersOnly   = bool("Players Only", true)
     private val mobsOnly      = bool("Mobs Only",    false)
     private val range         = float("Range",       50f,  2f,  50f)
-    private val cps           = int  ("CPS",         25,   1,   50)
-    private val boost         = int  ("Packets",     2,    1,   10)
-    private val targetMode    = int  ("Target Mode", 2,    0,   2)   // 0=Single, 1=Switch, 2=Multi
-    private val switchDelay   = int  ("Switch Delay",100,  20,  1000)
+    private val wallRange     = float("Wall Range",  3f,   0f,  10f)   // KillAura3: attack through walls
 
-    // ── Orbit settings ──────────────────────────────────────
+    // ── Target selection ──────────────────────────────────
+    private val targetMode    = int("Target Mode", 2,    0,   2)   // 0=Single, 1=Switch, 2=Multi
+    private val switchDelay   = int("Switch Delay",100,  20,  1000)
+
+    // ── Orbit ──────────────────────────────────────────────
     private val orbitEnabled     = bool("Orbit",          false)
     private val orbitRange       = float("Orbit Range",   6f,   1.5f, 25f)
     private val orbitSpeed       = float("Orbit Speed",   8f,   1f,   30f)
     private val orbitMoveSpeed   = float("Move Speed",    2.0f,  0.5f, 6f)
     private val orbitStopDist    = float("Stop Distance", 100f,  10f,  200f)
 
-    // ── Advanced rotation settings (KillAura2) ─────────────
-    private val rotMode        = int("Rotation Mode", 1, 0, 3)          // 0=None, 1=Normal, 2=Strafe, 3=Edge
-    private val metaRotMode    = int("Meta Rotation", 0, 0, 1)          // 0=Normal, 1=Server-side (stub)
-    private val vortexMode     = int("Vortex Mode", 0, 0, 3)            // 0=Off, 1=Counteract, 2=Jitter, 3=Adapt
-    private val jitterIntensity= float("Jitter Int", 2.0f, 0f, 10f)
-    private val aimSmoothness  = float("Smoothness", 80f, 0f, 100f)
-    private val offsetY        = int("Y Offset", 0, -30, 30)
-    private val antiKillaura   = bool("Anti KA", false)
-    private val antiKARange    = float("Anti KA Range", 2f, 0f, 5f)
+    // ── KillAura3 rotations ────────────────────────────────
+    private val rotMode        = int("Rotation Mode", 1, 0, 2)   // 0=None, 1=Normal, 2=Strafe
 
-    // ── NEW: Prediction & shrinkbox ──────────────────────
-    private val predictTicks   = int  ("Predict Ticks",  1,   0,   5)
-    private val shrinkbox      = float("Shrinkbox",      0.8f, 0.2f, 1.2f)
+    // ── Quantum prediction ──────────────────────────────────
+    private val quantum        = bool("Quantum",          false)
+    private val quantumAlgo    = int ("Q-Algorithm",      0,   0,   3)   // 0=Dynamic, 1=Velocity, 2=Pattern, 3=Neural
+    private val quantumStrength= float("Q-Strength",      1.5f, 0f,  5f)
+    private val quantumHistory = int ("Q-History",        10,   3,   30)
 
-    // ── Base settings ──────────────────────────────────────
+    // ── Base ────────────────────────────────────────────────
     private val silentRot     = bool("Silent Rotation", true)
     private val ignoreFriends = bool("Ignore Friends", true)
     private val antiBot       = bool("Anti Bot",       true)
@@ -66,40 +71,42 @@ class KillAura : BaseModule(
 
     // ── State ─────────────────────────────────────────────────
     @Volatile private var lastAttackNs   = 0L
+    @Volatile private var lastAttackMs   = 0L
     @Volatile private var lastSwitchMs   = 0L
     @Volatile private var switchIndex    = 0
     @Volatile private var currentTarget: EntityTracker.TrackedEntity? = null
     @Volatile private var cachedTargets: List<EntityTracker.TrackedEntity> = emptyList()
     @Volatile private var lastScanMs     = 0L
-    @Volatile private var headLockYaw    = 0f
-    @Volatile private var headLockPitch  = 0f
-    @Volatile private var orbitAngle     = 0f
 
-    // Rotation smoothing state
-    private var lastYaw = 0f
-    private var lastPitch = 0f
+    // Rotation state
+    private var rotAngle = Pair(0f, 0f)
+    private var shouldRot = false
     private var strafeAngle = 0f
 
-    // Target history for prediction
-    private val targetHistory = mutableListOf<Pair<Float, Float>>()
+    // Quantum state
+    private var positionHistory = mutableListOf<Vector3f>()
+    private var velocityHistory = mutableListOf<Vector3f>()
+    private var lastQuantumTarget: EntityTracker.TrackedEntity? = null
+    private var quantumConfidence = 1.0f
+
+    // Orbit state
+    private var orbitAngle = 0f
 
     private var tickJob: Job? = null
 
     override fun onEnable() {
         super.onEnable()
         lastAttackNs   = 0L
+        lastAttackMs   = 0L
         lastSwitchMs   = 0L
         switchIndex    = 0
         currentTarget  = null
         cachedTargets  = emptyList()
         lastScanMs     = 0L
-        headLockYaw    = EntityTracker.selfYaw
-        headLockPitch  = EntityTracker.selfPitch
-        orbitAngle     = Random.nextFloat() * 360f
-        lastYaw        = EntityTracker.selfYaw
-        lastPitch      = EntityTracker.selfPitch
-        strafeAngle    = 0f
-        targetHistory.clear()
+        positionHistory.clear()
+        velocityHistory.clear()
+        lastQuantumTarget = null
+        quantumConfidence = 1.0f
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -107,6 +114,9 @@ class KillAura : BaseModule(
     override fun onDisable() {
         tickJob?.cancel()
         PacketEventBus.unregister(this)
+        positionHistory.clear()
+        velocityHistory.clear()
+        lastQuantumTarget = null
         super.onDisable()
     }
 
@@ -127,7 +137,7 @@ class KillAura : BaseModule(
         val sx = EntityTracker.selfX
         val sy = EntityTracker.selfY
         val sz = EntityTracker.selfZ
-        val raw = EntityTracker.getEntitiesInRange(range.value)
+        val raw = EntityTracker.getEntitiesInRange(range.value + wallRange.value)
 
         return raw
             .filter { it.runtimeId != EntityTracker.selfRuntimeId }
@@ -149,143 +159,177 @@ class KillAura : BaseModule(
 
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
 
-    // ── Advanced rotation calculation with prediction & shrinkbox ────
-    private fun calculateRotation(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        // 1. Base aim position (eyes)
-        var aimX = target.x
-        var aimY = target.y + 1.5f
-        var aimZ = target.z
-
-        // ── Prediction ──────────────────────────────────────
-        if (predictTicks.value > 0 && targetHistory.size >= 2) {
-            // Compute velocity from last two positions
-            val last = targetHistory.last()
-            val prev = targetHistory[targetHistory.size - 2]
-            val velX = last.first - prev.first
-            val velZ = last.second - prev.second
-            // Predict ahead by predictTicks * 0.05 (each tick ~50ms)
-            val dt = predictTicks.value * 0.05f
-            aimX += velX * dt
-            aimZ += velZ * dt
+    // ── Quantum prediction ──────────────────────────────────
+    private fun predictWithQuantum(target: EntityTracker.TrackedEntity, currentPos: Vector3f): Vector3f {
+        if (!quantum.value || lastQuantumTarget != target) {
+            positionHistory.clear()
+            velocityHistory.clear()
+            lastQuantumTarget = target
+            quantumConfidence = 1.0f
+            return currentPos
         }
-        // Update history (store current position)
-        targetHistory.add(Pair(target.x, target.z))
-        if (targetHistory.size > 5) targetHistory.removeFirst() // keep last 5
 
-        // ── Shrinkbox ──────────────────────────────────────
-        // Shrink the horizontal vector from target center to aim point
-        val centerX = target.x
-        val centerZ = target.z
-        val deltaX = aimX - centerX
-        val deltaZ = aimZ - centerZ
-        aimX = centerX + deltaX * shrinkbox.value
-        aimZ = centerZ + deltaZ * shrinkbox.value
-        // Keep Y unchanged (eyes height)
+        positionHistory.add(currentPos)
+        if (positionHistory.size > quantumHistory.value) {
+            positionHistory.removeAt(0)
+        }
 
-        // 2. Base rotation to the (possibly predicted & shrunk) aim position
-        // We need to calculate rotation to (aimX, aimY, aimZ)
-        // We'll use a helper to get rotation from self to that point
-        val rot = RotationUtil.toPoint(aimX, aimY, aimZ)
-        var targetYaw = rot.yaw
-        var targetPitch = rot.pitch
-
-        // 3. Y offset (adjust pitch)
-        targetPitch += offsetY.value
-
-        // 4. Rotation modes: Strafe / Edge (unchanged)
-        when (rotMode.value) {
-            1 -> { /* Normal – nothing extra */ }
-            2 -> { // Strafe – circular aim around target
-                strafeAngle += 5f
-                if (strafeAngle >= 360f) strafeAngle -= 360f
-                val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
-                targetYaw += sin(rad) * 5f // amplitude
-            }
-            3 -> { // Edge – aim at hitbox corners
-                val halfWidth = 0.3f
-                val halfHeight = 0.9f
-                strafeAngle += 5f
-                if (strafeAngle >= 360f) strafeAngle -= 360f
-                val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
-                val offsetX = cos(rad) * halfWidth
-                val offsetZ = sin(rad) * halfWidth
-                val offsetY = sin(rad * 2) * halfHeight * 0.5f
-                val edgePos = Vector3f.from(
-                    target.x + offsetX,
-                    target.y + 0.2f + offsetY,
-                    target.z + offsetZ
-                )
-                val edgeRot = RotationUtil.toPoint(edgePos.x, edgePos.y, edgePos.z)
-                targetYaw = edgeRot.yaw
-                targetPitch = edgeRot.pitch
+        if (positionHistory.size >= 2) {
+            val latest = positionHistory.last()
+            val prev = positionHistory[positionHistory.size - 2]
+            val vel = Vector3f.from(latest.x - prev.x, latest.y - prev.y, latest.z - prev.z)
+            velocityHistory.add(vel)
+            if (velocityHistory.size > quantumHistory.value - 1) {
+                velocityHistory.removeAt(0)
             }
         }
 
-        // 5. Vortex modes (unchanged)
-        when (vortexMode.value) {
-            1 -> {
-                val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
-                val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.25f
-                targetYaw += jx
-                targetPitch += jy
-            }
-            2 -> {
-                val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value
-                val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
-                targetYaw += jx
-                targetPitch += jy
-            }
-            3 -> {
-                val dist = MathUtil.dist3(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ,
-                    target.x, target.y, target.z)
-                if (dist < 4f) {
-                    val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value
-                    val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.5f
-                    targetYaw += jx
-                    targetPitch += jy
-                } else {
-                    val jx = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.3f
-                    val jy = (Random.nextFloat() * 2 - 1) * jitterIntensity.value * 0.15f
-                    targetYaw += jx
-                    targetPitch += jy
-                }
-            }
+        if (positionHistory.size < 3) {
+            return currentPos
         }
 
-        // 6. Anti‑Killaura (unchanged)
-        if (antiKillaura.value) {
-            val distXZ = MathUtil.dist2(EntityTracker.selfX, EntityTracker.selfZ, target.x, target.z)
-            if (distXZ < antiKARange.value) {
-                targetYaw += 180f
-                targetPitch *= 0.5f
-            }
+        return when (quantumAlgo.value) {
+            0 -> predictDynamic(currentPos)
+            1 -> predictAdvancedVelocity(currentPos)
+            2 -> predictPatternBased(currentPos)
+            3 -> predictNeural(currentPos)
+            else -> currentPos
         }
-
-        // 7. Normalize angles
-        var normalizedYaw = targetYaw
-        while (normalizedYaw > 180f) normalizedYaw -= 360f
-        while (normalizedYaw < -180f) normalizedYaw += 360f
-        val normalizedPitch = targetPitch.coerceIn(-89f, 89f)
-
-        // 8. Smoothness
-        val smoothFactor = aimSmoothness.value / 100f
-        val smoothedYaw = lastYaw + (normalizedYaw - lastYaw) * smoothFactor
-        val smoothedPitch = lastPitch + (normalizedPitch - lastPitch) * smoothFactor
-
-        lastYaw = smoothedYaw
-        lastPitch = smoothedPitch
-
-        // 9. Apply to packet
-        pkt.rotation = Vector3f.from(smoothedPitch, smoothedYaw, smoothedYaw)
-        if (!silentRot.value) {
-            EntityTracker.selfYaw = smoothedYaw
-            EntityTracker.selfPitch = smoothedPitch
-        }
-        headLockYaw = smoothedYaw
-        headLockPitch = smoothedPitch
     }
 
-    // ── Orbit (unchanged) ──────────────────────────────────
+    private fun predictDynamic(currentPos: Vector3f): Vector3f {
+        if (velocityHistory.isEmpty()) return currentPos
+
+        var weightedVel = Vector3f.from(0f, 0f, 0f)
+        var totalWeight = 0f
+
+        for (i in velocityHistory.indices) {
+            val weight = (i + 1).toFloat() / velocityHistory.size
+            val vel = velocityHistory[i]
+            weightedVel = weightedVel.add(Vector3f.from(vel.x * weight, vel.y * weight, vel.z * weight))
+            totalWeight += weight
+        }
+
+        if (totalWeight > 0f) {
+            weightedVel = Vector3f.from(
+                weightedVel.x / totalWeight,
+                weightedVel.y / totalWeight,
+                weightedVel.z / totalWeight
+            )
+        }
+
+        if (velocityHistory.size >= 3) {
+            val last = velocityHistory.last()
+            val thirdLast = velocityHistory[velocityHistory.size - 3]
+            val accel = Vector3f.from(
+                (last.x - thirdLast.x) * 0.3f,
+                (last.y - thirdLast.y) * 0.3f,
+                (last.z - thirdLast.z) * 0.3f
+            )
+            weightedVel = weightedVel.add(accel)
+        }
+
+        val offset = Vector3f.from(
+            weightedVel.x * quantumStrength.value * 1.5f,
+            weightedVel.y * quantumStrength.value * 1.5f,
+            weightedVel.z * quantumStrength.value * 1.5f
+        )
+        return currentPos.add(offset)
+    }
+
+    private fun predictAdvancedVelocity(currentPos: Vector3f): Vector3f {
+        if (velocityHistory.size < 2) return currentPos
+
+        var avgVel = Vector3f.from(0f, 0f, 0f)
+        for (vel in velocityHistory) {
+            avgVel = avgVel.add(vel)
+        }
+        avgVel = Vector3f.from(
+            avgVel.x / velocityHistory.size,
+            avgVel.y / velocityHistory.size,
+            avgVel.z / velocityHistory.size
+        )
+        val offset = Vector3f.from(
+            avgVel.x * quantumStrength.value * 2.0f,
+            avgVel.y * quantumStrength.value * 2.0f,
+            avgVel.z * quantumStrength.value * 2.0f
+        )
+        return currentPos.add(offset)
+    }
+
+    private fun predictPatternBased(currentPos: Vector3f): Vector3f {
+        if (positionHistory.size < 5) return currentPos
+        return predictDynamic(currentPos)
+    }
+
+    private fun predictNeural(currentPos: Vector3f): Vector3f {
+        if (velocityHistory.size < 3) return currentPos
+
+        val recent = velocityHistory.last()
+        val recentMomentum = Vector3f.from(
+            recent.x * 0.4f,
+            recent.y * 0.4f,
+            recent.z * 0.4f
+        )
+
+        var avgLen = 0f
+        var avgDir = Vector3f.from(0f, 0f, 0f)
+        for (vel in velocityHistory) {
+            val len = sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z)
+            avgLen += len
+            if (len > 0f) {
+                avgDir = avgDir.add(Vector3f.from(vel.x / len, vel.y / len, vel.z / len))
+            }
+        }
+        avgLen /= velocityHistory.size.toFloat()
+        val avgDirection = Vector3f.from(
+            avgDir.x * avgLen * 0.3f,
+            avgDir.y * avgLen * 0.3f,
+            avgDir.z * avgLen * 0.3f
+        )
+
+        val noise = Vector3f.from(
+            (Random.nextFloat() * 2 - 1) * 0.05f,
+            (Random.nextFloat() * 2 - 1) * 0.02f,
+            (Random.nextFloat() * 2 - 1) * 0.05f
+        )
+        val total = recentMomentum.add(avgDirection).add(noise)
+        val offset = Vector3f.from(
+            total.x * quantumStrength.value,
+            total.y * quantumStrength.value,
+            total.z * quantumStrength.value
+        )
+        return currentPos.add(offset)
+    }
+
+    // ── Rotation (KillAura3 style) ──────────────────────────
+    private fun calculateRotationKillAura3(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
+        var aimPos = Vector3f.from(target.x, target.y, target.z)
+        aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
+
+        if (quantum.value) {
+            val currentPos = aimPos
+            aimPos = predictWithQuantum(target, currentPos)
+            if (quantumConfidence < 0.5f) {
+                aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
+            }
+        }
+
+        val rot = RotationUtil.toPoint(aimPos.x, aimPos.y, aimPos.z)
+        var yaw = rot.yaw
+        var pitch = rot.pitch
+
+        if (rotMode.value == 2) {
+            strafeAngle = (strafeAngle + 5f) % 360f
+            val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
+            yaw += sin(rad) * 5f
+        }
+
+        rotAngle = Pair(pitch, yaw)
+        shouldRot = true
+    }
+
+    // ── Orbit ──────────────────────────────────────────────────
     private fun applyOrbit(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         val selfPos = Vector3f.from(EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
         val distToTarget = MathUtil.dist3(selfPos.x, selfPos.y, selfPos.z, target.x, target.y, target.z)
@@ -337,7 +381,9 @@ class KillAura : BaseModule(
 
         if (cachedTargets.isEmpty()) {
             currentTarget = null
-            targetHistory.clear()
+            positionHistory.clear()
+            velocityHistory.clear()
+            lastQuantumTarget = null
             event.cancelAndReplace(pkt)
             return
         }
@@ -349,7 +395,9 @@ class KillAura : BaseModule(
             0 -> {
                 if (currentTarget == null || !cachedTargets.contains(currentTarget)) {
                     currentTarget = cachedTargets.firstOrNull()
-                    targetHistory.clear() // target changed, clear history
+                    positionHistory.clear()
+                    velocityHistory.clear()
+                    lastQuantumTarget = null
                 }
                 currentTarget
             }
@@ -358,7 +406,9 @@ class KillAura : BaseModule(
                     switchIndex = (switchIndex + 1) % cachedTargets.size
                     currentTarget = cachedTargets[switchIndex]
                     lastSwitchMs = nowMs
-                    targetHistory.clear() // target switched
+                    positionHistory.clear()
+                    velocityHistory.clear()
+                    lastQuantumTarget = null
                 }
                 currentTarget
             }
@@ -371,8 +421,17 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Advanced rotation ──────────────────────────────────
-        calculateRotation(primary, pkt)
+        // ── Rotation ──────────────────────────────────────────
+        calculateRotationKillAura3(primary, pkt)
+
+        if (shouldRot && rotMode.value != 0) {
+            val (pitch, yaw) = rotAngle
+            pkt.rotation = Vector3f.from(pitch, yaw, yaw)
+            if (!silentRot.value) {
+                EntityTracker.selfYaw = yaw
+                EntityTracker.selfPitch = pitch
+            }
+        }
 
         // ── Orbit ──────────────────────────────────────────────
         if (orbitEnabled.value) {
@@ -380,8 +439,11 @@ class KillAura : BaseModule(
         }
 
         // ── Attack timing ────────────────────────────────────
-        val attackDelay = 1_000_000_000L / cps.value
-        if (nowNs - lastAttackNs < attackDelay) {
+        val attackDelayNs = when (attackMode.value) {
+            0 -> 1_000_000_000L / cps.value
+            else -> intervalTicks.value * 50_000_000L // 50ms per tick
+        }
+        if (nowNs - lastAttackNs < attackDelayNs) {
             event.cancelAndReplace(pkt)
             return
         }
@@ -391,11 +453,13 @@ class KillAura : BaseModule(
             else -> cachedTargets
         }
 
+        // ── Range check with wallRange ──────────────────────
         val sx = EntityTracker.selfX
         val sy = EntityTracker.selfY
         val sz = EntityTracker.selfZ
         val inRange = targetsToHit.filter {
-            MathUtil.dist3(sx, sy, sz, it.x, it.y, it.z) <= range.value
+            val dist = MathUtil.dist3(sx, sy, sz, it.x, it.y, it.z)
+            dist <= range.value || dist <= wallRange.value
         }
         if (inRange.isEmpty()) {
             event.cancelAndReplace(pkt)
@@ -403,11 +467,28 @@ class KillAura : BaseModule(
         }
 
         val slot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
-        repeat(boost.value) {
+
+        // ── Attack using KillAura3 features ────────────────
+        val attacksPerHit = hitAttempts.value
+        val packetCount = boost.value
+
+        repeat(attacksPerHit) { attempt ->
             inRange.forEach { targetEntity ->
-                PacketUtil.sendSwing(session)
-                val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
-                PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
+                if (Random.nextInt(100) < hitChance.value) {
+                    if (packetAttack.value) {
+                        // Packet attack: send multiple packets (simulate InventoryTransactionPacket)
+                        repeat(packetCount) {
+                            PacketUtil.sendSwing(session)
+                            val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
+                            PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
+                        }
+                    } else {
+                        // Normal attack: one swing + one attack per attempt
+                        PacketUtil.sendSwing(session)
+                        val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
+                        PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
+                    }
+                }
             }
         }
 
