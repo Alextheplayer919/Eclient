@@ -20,26 +20,26 @@ import kotlin.random.Random
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "KillAura3 rotations + Quantum + Attack features (hitAttempts, packetAttack, wallRange)"
+    description = "KillAura3 rotations + Quantum + TargetLock override"
 ), PacketEventBus.PacketListener {
 
-    // ── Attack settings (WAura + KillAura3 extras) ────────
-    private val attackMode     = int("Attack Mode", 0, 0, 1)    // 0=CPS, 1=Interval (ticks)
+    // ── Attack settings ────────────────────────────────────
+    private val attackMode     = int("Attack Mode", 0, 0, 1)
     private val cps            = int("CPS",          25, 1, 50)
-    private val intervalTicks  = int("Interval",      1, 0, 20) // ticks between attacks
-    private val boost          = int("Packets",      2, 1, 10)   // packets per hit
-    private val hitAttempts    = int("Hit Attempts", 1, 1, 5)    // attacks per tick (KillAura3)
-    private val packetAttack   = bool("Packet Attack", false)    // use packet attack (KillAura3)
+    private val intervalTicks  = int("Interval",      1, 0, 20)
+    private val boost          = int("Packets",      2, 1, 10)
+    private val hitAttempts    = int("Hit Attempts", 1, 1, 5)
+    private val packetAttack   = bool("Packet Attack", false)
     private val hitChance      = int("Hit Chance",   100, 0, 100)
 
-    // ── Range settings ──────────────────────────────────────
+    // ── Range ──────────────────────────────────────────────
     private val playersOnly   = bool("Players Only", true)
     private val mobsOnly      = bool("Mobs Only",    false)
     private val range         = float("Range",       50f,  2f,  50f)
-    private val wallRange     = float("Wall Range",  3f,   0f,  10f)   // KillAura3: attack through walls
+    private val wallRange     = float("Wall Range",  3f,   0f,  10f)
 
-    // ── Target selection ──────────────────────────────────
-    private val targetMode    = int("Target Mode", 2,    0,   2)   // 0=Single, 1=Switch, 2=Multi
+    // ── Target selection ───────────────────────────────────
+    private val targetMode    = int("Target Mode", 2,    0,   2)
     private val switchDelay   = int("Switch Delay",100,  20,  1000)
 
     // ── Orbit ──────────────────────────────────────────────
@@ -49,16 +49,17 @@ class KillAura : BaseModule(
     private val orbitMoveSpeed   = float("Move Speed",    2.0f,  0.5f, 6f)
     private val orbitStopDist    = float("Stop Distance", 100f,  10f,  200f)
 
-    // ── KillAura3 rotations ────────────────────────────────
+    // ── Rotation ──────────────────────────────────────────
     private val rotMode        = int("Rotation Mode", 1, 0, 2)   // 0=None, 1=Normal, 2=Strafe
+    private val targetLock     = bool("Target Lock", false)      // ⬅️ overrides everything, silent yaw-only
 
-    // ── Quantum prediction ──────────────────────────────────
+    // ── Quantum prediction ─────────────────────────────────
     private val quantum        = bool("Quantum",          false)
-    private val quantumAlgo    = int ("Q-Algorithm",      0,   0,   3)   // 0=Dynamic, 1=Velocity, 2=Pattern, 3=Neural
+    private val quantumAlgo    = int ("Q-Algorithm",      0,   0,   3)
     private val quantumStrength= float("Q-Strength",      1.5f, 0f,  5f)
     private val quantumHistory = int ("Q-History",        10,   3,   30)
 
-    // ── Base ────────────────────────────────────────────────
+    // ── Base ───────────────────────────────────────────────
     private val silentRot     = bool("Silent Rotation", true)
     private val ignoreFriends = bool("Ignore Friends", true)
     private val antiBot       = bool("Anti Bot",       true)
@@ -69,27 +70,23 @@ class KillAura : BaseModule(
         private const val POSITION_TOLERANCE = 0.05f
     }
 
-    // ── State ─────────────────────────────────────────────────
+    // ── State ──────────────────────────────────────────────
     @Volatile private var lastAttackNs   = 0L
-    @Volatile private var lastAttackMs   = 0L
     @Volatile private var lastSwitchMs   = 0L
     @Volatile private var switchIndex    = 0
     @Volatile private var currentTarget: EntityTracker.TrackedEntity? = null
     @Volatile private var cachedTargets: List<EntityTracker.TrackedEntity> = emptyList()
     @Volatile private var lastScanMs     = 0L
 
-    // Rotation state
     private var rotAngle = Pair(0f, 0f)
     private var shouldRot = false
     private var strafeAngle = 0f
 
-    // Quantum state
     private var positionHistory = mutableListOf<Vector3f>()
     private var velocityHistory = mutableListOf<Vector3f>()
     private var lastQuantumTarget: EntityTracker.TrackedEntity? = null
     private var quantumConfidence = 1.0f
 
-    // Orbit state
     private var orbitAngle = 0f
 
     private var tickJob: Job? = null
@@ -97,7 +94,6 @@ class KillAura : BaseModule(
     override fun onEnable() {
         super.onEnable()
         lastAttackNs   = 0L
-        lastAttackMs   = 0L
         lastSwitchMs   = 0L
         switchIndex    = 0
         currentTarget  = null
@@ -302,7 +298,7 @@ class KillAura : BaseModule(
         return currentPos.add(offset)
     }
 
-    // ── Rotation (KillAura3 style) ──────────────────────────
+    // ── KillAura3 rotation (normal mode) ──────────────────
     private fun calculateRotationKillAura3(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         var aimPos = Vector3f.from(target.x, target.y, target.z)
         aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
@@ -317,7 +313,7 @@ class KillAura : BaseModule(
 
         val rot = RotationUtil.toPoint(aimPos.x, aimPos.y, aimPos.z)
         var yaw = rot.yaw
-        var pitch = rot.pitch
+        val pitch = rot.pitch
 
         if (rotMode.value == 2) {
             strafeAngle = (strafeAngle + 5f) % 360f
@@ -326,6 +322,26 @@ class KillAura : BaseModule(
         }
 
         rotAngle = Pair(pitch, yaw)
+        shouldRot = true
+    }
+
+    // ── TargetLock rotation (silent yaw-only, overrides everything) ──
+    private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
+        // Aim at target's body center (Apolon CalcPlayerAngle style)
+        val sx = EntityTracker.selfX
+        val sy = EntityTracker.selfY + 1.62f
+        val sz = EntityTracker.selfZ
+        val dx = target.x - sx
+        val dz = target.z - sz
+
+        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+
+        // Send target yaw with our REAL pitch (never touch pitch)
+        val realPitch = EntityTracker.selfPitch
+        pkt.rotation = Vector3f.from(realPitch, targetYaw, targetYaw)
+
+        // Fully silent — do NOT touch EntityTracker.selfYaw / selfPitch
+        rotAngle = Pair(realPitch, targetYaw)
         shouldRot = true
     }
 
@@ -372,7 +388,7 @@ class KillAura : BaseModule(
         EntityTracker.selfZ = newPos.z
     }
 
-    // ── Attack ─────────────────────────────────────────────────
+    // ── Main packet handler ────────────────────────────────
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
         if (event.direction != PacketEvent.Direction.CLIENT_TO_SERVER) return
@@ -421,27 +437,30 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Rotation ──────────────────────────────────────────
-        calculateRotationKillAura3(primary, pkt)
-
-        if (shouldRot && rotMode.value != 0) {
-            val (pitch, yaw) = rotAngle
-            pkt.rotation = Vector3f.from(pitch, yaw, yaw)
-            if (!silentRot.value) {
-                EntityTracker.selfYaw = yaw
-                EntityTracker.selfPitch = pitch
+        // ── Rotation (TargetLock overrides everything) ────
+        if (targetLock.value) {
+            applyTargetLock(primary, pkt)
+        } else {
+            calculateRotationKillAura3(primary, pkt)
+            if (shouldRot && rotMode.value != 0) {
+                val (pitch, yaw) = rotAngle
+                pkt.rotation = Vector3f.from(pitch, yaw, yaw)
+                if (!silentRot.value) {
+                    EntityTracker.selfYaw = yaw
+                    EntityTracker.selfPitch = pitch
+                }
             }
         }
 
-        // ── Orbit ──────────────────────────────────────────────
+        // ── Orbit ──────────────────────────────────────────
         if (orbitEnabled.value) {
             applyOrbit(session, primary, pkt)
         }
 
-        // ── Attack timing ────────────────────────────────────
+        // ── Attack timing ──────────────────────────────────
         val attackDelayNs = when (attackMode.value) {
             0 -> 1_000_000_000L / cps.value
-            else -> intervalTicks.value * 50_000_000L // 50ms per tick
+            else -> intervalTicks.value * 50_000_000L
         }
         if (nowNs - lastAttackNs < attackDelayNs) {
             event.cancelAndReplace(pkt)
@@ -453,7 +472,6 @@ class KillAura : BaseModule(
             else -> cachedTargets
         }
 
-        // ── Range check with wallRange ──────────────────────
         val sx = EntityTracker.selfX
         val sy = EntityTracker.selfY
         val sz = EntityTracker.selfZ
@@ -467,23 +485,19 @@ class KillAura : BaseModule(
         }
 
         val slot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
-
-        // ── Attack using KillAura3 features ────────────────
         val attacksPerHit = hitAttempts.value
         val packetCount = boost.value
 
-        repeat(attacksPerHit) { attempt ->
+        repeat(attacksPerHit) {
             inRange.forEach { targetEntity ->
                 if (Random.nextInt(100) < hitChance.value) {
                     if (packetAttack.value) {
-                        // Packet attack: send multiple packets (simulate InventoryTransactionPacket)
                         repeat(packetCount) {
                             PacketUtil.sendSwing(session)
                             val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
                             PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
                         }
                     } else {
-                        // Normal attack: one swing + one attack per attempt
                         PacketUtil.sendSwing(session)
                         val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
                         PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
