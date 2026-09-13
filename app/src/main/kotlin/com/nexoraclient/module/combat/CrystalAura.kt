@@ -427,44 +427,58 @@ class CrystalAura : BaseModule(
      * Returns the SINGLE best base for this target. No queue, no placeCount-style spread.
      */
     private fun buildBestBase(target: EntityTracker.TrackedEntity, dbg: ((String) -> Unit)?): Triple<Int, Int, Int>? {
-        if (!WorldBlockTracker.hasAnyTerrainData()) return null
+    if (!WorldBlockTracker.hasAnyTerrainData()) return null
 
-        val candidates = LinkedHashSet<Triple<Int, Int, Int>>()
-        candidates.addAll(searchPlaceBase())
-        dbg?.invoke("Kendi etrafım: ${candidates.size} obsidian/bedrock zemin")
+    val tx = floor(target.x).toInt()
+    val ty = floor(target.y).toInt() - 1
+    val tz = floor(target.z).toInt()
 
-        // Target surround — 8 neighbors at feet-1.
-        val tx = floor(target.x).toInt()
-        val ty = floor(target.y).toInt() - 1
-        val tz = floor(target.z).toInt()
-        var tFound = 0
-        for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
-            val bx = tx + dx; val bz = tz + dz
-            val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
-            if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
-            val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
-            if (above != null && above !in NON_SOLID) continue
-            if (candidates.add(Triple(bx, ty, bz))) tFound++
-        }
-        dbg?.invoke("Rakip etrafı: +$tFound yeni zemin")
-
-        if (candidates.isEmpty()) {
-                        dbg?.invoke("FEET DEBUG: hasTerrain=${WorldBlockTracker.hasAnyTerrainData()} | ${WorldBlockTracker.debugSummary()}")
-            return null
-        }
-
-        val scored = candidates.mapNotNull { p ->
-            val cx = p.first + 0.5f; val cy = p.second + 2f; val cz = p.third + 0.5f
-            val dmg = simulateExplosionDamage(cx, cy, cz)
+    // PRIORITY: obsidian/bedrock directly under the target's feet.
+    val feetId = WorldBlockTracker.getBlockIdentifier(tx, ty, tz)
+    if (feetId == "minecraft:obsidian" || feetId == "minecraft:bedrock") {
+        val above = WorldBlockTracker.getBlockIdentifier(tx, ty + 1, tz)
+        if (above == null || above in NON_SOLID) {
+            val dmg = simulateExplosionDamage(tx + 0.5f, ty + 2f, tz + 0.5f)
             val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
-            if (eff > 0f || suicide.value) Pair(p, eff) else null
+            if (eff > 0f || suicide.value) {
+                dbg?.invoke("PRIORITY foot base ($tx,$ty,$tz) dmg=${dmg.mostDamage.toInt()} self=${dmg.selfDamage.toInt()}")
+                return Triple(tx, ty, tz)
+            }
+            dbg?.invoke("Foot base exists but self-damage too high (dmg=${dmg.mostDamage.toInt()} self=${dmg.selfDamage.toInt()})")
         }
-        dbg?.invoke("Hasar hesaplanan ${scored.size}/${candidates.size}")
-
-        return scored.maxByOrNull { it.second }?.first
     }
 
-    private fun searchPlaceBase(): List<Triple<Int, Int, Int>> {
+    // Fallback: normal scan (self sphere + 8-neighbor ring around target's feet)
+    val candidates = LinkedHashSet<Triple<Int, Int, Int>>()
+    candidates.addAll(searchPlaceBase())
+    dbg?.invoke("Self scan: ${candidates.size}")
+
+    var tFound = 0
+    for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
+        val bx = tx + dx; val bz = tz + dz
+        val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
+        if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
+        val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
+        if (above != null && above !in NON_SOLID) continue
+        if (candidates.add(Triple(bx, ty, bz))) tFound++
+    }
+    dbg?.invoke("Target ring: +$tFound")
+
+    if (candidates.isEmpty()) {
+        dbg?.invoke("FEET DEBUG: hasTerrain=${WorldBlockTracker.hasAnyTerrainData()} | ${WorldBlockTracker.debugSummary()}")
+        return null
+    }
+
+    val scored = candidates.mapNotNull { p ->
+        val cx = p.first + 0.5f; val cy = p.second + 2f; val cz = p.third + 0.5f
+        val dmg = simulateExplosionDamage(cx, cy, cz)
+        val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+        if (eff > 0f || suicide.value) Pair(p, eff) else null
+    }
+    dbg?.invoke("Hasar hesaplanan ${scored.size}/${candidates.size}")
+
+    return scored.maxByOrNull { it.second }?.first
+    }    private fun searchPlaceBase(): List<Triple<Int, Int, Int>> {
         if (!WorldBlockTracker.hasAnyTerrainData()) return emptyList()
         val r  = floor(range.value).toInt()
         val cx = floor(EntityTracker.selfX).toInt()
