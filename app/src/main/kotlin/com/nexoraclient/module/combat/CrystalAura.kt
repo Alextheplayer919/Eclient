@@ -572,28 +572,6 @@ class CrystalAura : BaseModule(
         sendLog(session, "⚠ $message")
     }
 private fun attackCrystal(session: RubidiumRelaySession, runtimeId: Long) {
-    if (requireWeapon.value) {
-        val swordSlot = SWORD_ITEM_IDS
-            .map { InventoryUtil.findItemSlotInHotbar(it) }
-            .firstOrNull { it >= 0 }
-
-        if (swordSlot != null && swordSlot >= 0) {
-            when (switchMode.value) {
-                2 -> {
-                    val old = EntityTracker.selfHotbarSlot
-                    InventoryUtil.switchSlot(swordSlot)
-                    PacketUtil.sendSwing(session)
-                    PacketUtil.sendAttack(session, runtimeId)
-                    InventoryUtil.switchSlot(old)
-                    crystalBlacklist[runtimeId] = System.currentTimeMillis()
-                    return
-                }
-                3 -> InventoryUtil.sendMobEquipment(session, swordSlot)
-                else -> InventoryUtil.switchSlot(swordSlot)
-            }
-        }
-    }
-
     PacketUtil.sendSwing(session)
     PacketUtil.sendAttack(session, runtimeId)
     crystalBlacklist[runtimeId] = System.currentTimeMillis()
