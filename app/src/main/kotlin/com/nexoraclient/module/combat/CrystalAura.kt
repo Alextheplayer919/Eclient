@@ -449,4 +449,126 @@ class CrystalAura : BaseModule(
         dbg?.invoke("Rakip etrafı: +$tFound yeni zemin")
 
         if (candidates.isEmpty()) {
-            dbg?.invoke("FEET DEBUG: hasTerrain=${WorldBlockTracker.hasAnyTerrainData()} | ${WorldBlockTracker
+                        dbg?.invoke("FEET DEBUG: hasTerrain=${WorldBlockTracker.hasAnyTerrainData()} | ${WorldBlockTracker.debugSummary()}")
+            return null
+        }
+
+        val scored = candidates.mapNotNull { p ->
+            val cx = p.first + 0.5f; val cy = p.second + 2f; val cz = p.third + 0.5f
+            val dmg = simulateExplosionDamage(cx, cy, cz)
+            val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+            if (eff > 0f || suicide.value) Pair(p, eff) else null
+        }
+        dbg?.invoke("Hasar hesaplanan ${scored.size}/${candidates.size}")
+
+        return scored.maxByOrNull { it.second }?.first
+    }
+
+    private fun searchPlaceBase(): List<Triple<Int, Int, Int>> {
+        if (!WorldBlockTracker.hasAnyTerrainData()) return emptyList()
+        val r  = floor(range.value).toInt()
+        val cx = floor(EntityTracker.selfX).toInt()
+        val cy = floor(EntityTracker.selfY).toInt()
+        val cz = floor(EntityTracker.selfZ).toInt()
+        val bases = ArrayList<Triple<Int, Int, Int>>()
+        for (x in cx - r..cx + r) {
+            for (y in cy - r..cy + r) {
+                for (z in cz - r..cz + r) {
+                    val id = WorldBlockTracker.getBlockIdentifier(x, y, z) ?: continue
+                    if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
+                    val above = WorldBlockTracker.getBlockIdentifier(x, y + 1, z)
+                    if (above != null && above !in NON_SOLID) continue
+                    bases.add(Triple(x, y, z))
+                }
+            }
+        }
+        return bases
+    }
+
+    private fun simulateExplosionDamage(cx: Float, cy: Float, cz: Float): ExplosionResult {
+        val diameter = EXPLOSION_SIZE * 2f
+        var selfDamage = 0f
+        var mostDamage = 0f
+
+        val selfDist = MathUtil.dist3(cx, cy, cz, EntityTracker.selfX, EntityTracker.selfY + 0.9f, EntityTracker.selfZ)
+        if (selfDist <= diameter) {
+            val exposure = exposureTo(cx, cy, cz, EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
+            selfDamage = explosionDamage(selfDist, diameter, exposure)
+        }
+
+        for (p in EntityTracker.getPlayers(diameter)) {
+            if (p.runtimeId == EntityTracker.selfRuntimeId) continue
+            val dist = MathUtil.dist3(cx, cy, cz, p.x, p.y + 0.9f, p.z)
+            if (dist > diameter) continue
+            val exposure = exposureTo(cx, cy, cz, p.x, p.y, p.z)
+            val dmg = explosionDamage(dist, diameter, exposure)
+            if (dmg > mostDamage) mostDamage = dmg
+        }
+
+        return ExplosionResult(mostDamage, selfDamage)
+    }
+
+    private fun explosionDamage(distance: Float, diameter: Float, exposure: Float): Float {
+        if (distance > diameter) return 0f
+        val impact = (1f - distance / diameter) * exposure
+        return (impact * impact + impact) / 2f * 7f * diameter + 1f
+    }
+
+    private fun exposureTo(cx: Float, cy: Float, cz: Float, tx: Float, ty: Float, tz: Float): Float {
+        if (!WorldBlockTracker.hasAnyTerrainData()) return 1f
+        val samples = arrayOf(
+            Triple(tx, ty + 0.1f, tz),
+            Triple(tx, ty + 0.9f, tz),
+            Triple(tx, ty + 1.6f, tz),
+            Triple(tx + 0.3f, ty + 0.9f, tz),
+            Triple(tx - 0.3f, ty + 0.9f, tz)
+        )
+        var clear = 0
+        for ((sx, sy, sz) in samples) {
+            if (!isRayBlocked(cx, cy, cz, sx, sy, sz)) clear++
+        }
+        return clear.toFloat() / samples.size
+    }
+
+    private fun isRayBlocked(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float): Boolean {
+        val dist = MathUtil.dist3(x0, y0, z0, x1, y1, z1)
+        if (dist < 0.01f) return false
+        val steps = (dist * 2f).toInt().coerceIn(1, 40)
+        for (i in 1 until steps) {
+            val t = i.toFloat() / steps
+            val bx = floor(x0 + (x1 - x0) * t).toInt()
+            val by = floor(y0 + (y1 - y0) * t).toInt()
+            val bz = floor(z0 + (z1 - z0) * t).toInt()
+            val id = WorldBlockTracker.getBlockIdentifier(bx, by, bz) ?: continue
+            if (id !in NON_SOLID) return true
+        }
+        return false
+    }
+
+    private fun sendLog(session: RubidiumRelaySession, message: String) {
+        if (!log.value) return
+        try {
+            session.sendToClient(TextPacket().apply {
+                type               = TextPacket.Type.RAW
+                isNeedsTranslation = false
+                sourceName         = ""
+                xuid               = ""
+                platformChatId     = ""
+                setMessage("§b[CrystalAura]§f $message")
+                setFilteredMessage("")
+            })
+        } catch (_: Exception) {}
+    }
+
+    private fun logFail(session: RubidiumRelaySession, message: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastFailLogMs >= LOG_FAIL_INTERVAL_MS) {
+            lastFailLogMs = now
+            DiagLog.log("CrystalAura", "⚠ $message")
+        }
+        if (!log.value) return
+        if (now - lastChatFailMs < CHAT_FAIL_INTERVAL_MS) return
+        lastChatFailMs = now
+        sendLog(session, "⚠ $message")
+    }
+}
