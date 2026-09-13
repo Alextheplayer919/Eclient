@@ -11,6 +11,7 @@ import org.cloudburstmc.protocol.bedrock.data.inventory.ContainerId
 import org.cloudburstmc.protocol.bedrock.data.inventory.ContainerSlotType
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData
 import org.cloudburstmc.protocol.bedrock.packet.*
+import java.util.concurrent.ConcurrentHashMap
 
 class AutoTotem : BaseModule(
     name        = "AutoTotem",
@@ -22,7 +23,6 @@ class AutoTotem : BaseModule(
 
     companion object {
         // How long to wait for the server to confirm our move packet before retrying.
-        // Real round trip is ~30-80ms; 200ms is generous but not glacial.
         private const val PENDING_TIMEOUT_MS = 200L
 
         // Safety-net tick. Cheap now that we don't allocate in the loop.
@@ -36,12 +36,11 @@ class AutoTotem : BaseModule(
     @Volatile private var tickJob: kotlinx.coroutines.Job? = null
     @Volatile private var totemSlot        = -1
     @Volatile private var offhandHasTotem  = false
-    @Volatile private var pendingSendMs    = 0L   // 0 = not waiting, else = timestamp of last send
+    @Volatile private var pendingSendMs    = 0L
     @Volatile private var pendingSlotSent  = -1
     @Volatile private var lastSendMs       = 0L
 
-    // Slots we've recently failed on — skip them until we've tried the others.
-    private val failedSlots = ConcurrentHashMap<Int, Int>()   // slot -> fail count
+    private val failedSlots = ConcurrentHashMap<Int, Int>()
 
     override fun onEnable() {
         super.onEnable()
@@ -62,23 +61,17 @@ class AutoTotem : BaseModule(
         super.onDisable()
     }
 
-    /**
-     * Zero-allocation refresh. Iterates slot by slot instead of taking a full
-     * Map<Int, ItemData> copy of the entire inventory.
-     */
     private fun refreshFromSnapshot() {
         offhandHasTotem = InventoryUtil.isTotem(EntityTracker.getInventoryItem(InventoryUtil.OFFHAND_SLOT))
         totemSlot = -1
         for (slot in InventoryUtil.HOTBAR_START..InventoryUtil.INV_END) {
             if (InventoryUtil.isTotem(EntityTracker.getInventoryItem(slot))) {
-                // Skip slots we've recently marked as broken
                 val fails = failedSlots[slot] ?: 0
                 if (fails >= MAX_FAILS_PER_SLOT) continue
                 totemSlot = slot
                 break
             }
         }
-        // If every slot was skipped due to fails, clear fails and pick the first one anyway
         if (totemSlot == -1 && !offhandHasTotem) {
             failedSlots.clear()
             for (slot in InventoryUtil.HOTBAR_START..InventoryUtil.INV_END) {
@@ -93,17 +86,16 @@ class AutoTotem : BaseModule(
     private fun tickCheck() {
         val now = System.currentTimeMillis()
 
-        // Resolve pending state: did the server confirm or reject?
         if (pendingSendMs > 0L) {
             if (offhandHasTotem) {
                 // Server confirmed — clear pending, reset fail count for the slot we used
+                failedSlots.remove(pendingSlotSent)
                 pendingSendMs = 0L
                 pendingSlotSent = -1
-                failedSlots.remove(pendingSlotSent)
                 return
             }
             if (now - pendingSendMs > PENDING_TIMEOUT_MS) {
-                // Timed out — server never confirmed. Count this as a failure on that slot.
+                // Timed out — count this as a failure on that slot
                 val failedSlot = pendingSlotSent
                 if (failedSlot >= 0) {
                     val fails = (failedSlots[failedSlot] ?: 0) + 1
@@ -112,21 +104,17 @@ class AutoTotem : BaseModule(
                 }
                 pendingSendMs = 0L
                 pendingSlotSent = -1
-                // Force refresh so we can pick a different slot if this one is broken
                 refreshFromSnapshot()
-                // fall through to try again
             } else {
                 // Still waiting — do nothing
                 return
             }
         }
 
-        // Recheck local state
         val hasTotemNow = InventoryUtil.isTotem(EntityTracker.getInventoryItem(InventoryUtil.OFFHAND_SLOT))
         offhandHasTotem = hasTotemNow
         if (hasTotemNow) return
 
-        // Refresh cached slot if it's stale
         if (totemSlot < 0 || !InventoryUtil.isTotem(EntityTracker.getInventoryItem(totemSlot))) {
             refreshFromSnapshot()
         }
@@ -142,7 +130,6 @@ class AutoTotem : BaseModule(
             is InventoryContentPacket -> {
                 when (pkt.containerId) {
                     0 -> {
-                        // Full inventory refresh — rebuild totemSlot from scratch
                         totemSlot = -1
                         pkt.contents.forEachIndexed { slot, item ->
                             if (totemSlot == -1 && InventoryUtil.isTotem(item)) {
@@ -156,13 +143,10 @@ class AutoTotem : BaseModule(
                         val nowHasTotem = InventoryUtil.isTotem(pkt.contents.firstOrNull())
                         offhandHasTotem = nowHasTotem
                         if (nowHasTotem) {
-                            // Confirmed! Clear pending + reset fail counter
                             failedSlots.remove(pendingSlotSent)
                             pendingSendMs = 0L
                             pendingSlotSent = -1
                         } else {
-                            // Server says offhand is empty — if we had a pending send,
-                            // it just got resolved (as a rejection)
                             if (pendingSendMs > 0L) {
                                 val failedSlot = pendingSlotSent
                                 if (failedSlot >= 0) {
@@ -202,8 +186,6 @@ class AutoTotem : BaseModule(
                     if (InventoryUtil.isTotem(pkt.item)) {
                         if (totemSlot == -1) totemSlot = pkt.slot
                     } else if (totemSlot == pkt.slot) {
-                        // Our cached source slot just got emptied (either by us, or by
-                        // the player moving stuff around). Rescan.
                         totemSlot = -1
                         refreshFromSnapshot()
                     }
@@ -214,12 +196,10 @@ class AutoTotem : BaseModule(
                 if (pkt.runtimeEntityId != EntityTracker.selfRuntimeId) return
                 val type = runCatching { pkt.type?.toString()?.uppercase() ?: "" }.getOrElse { "" }
                 if (type.contains("CONSUME") || type.contains("TOTEM")) {
-                    // Totem was popped. Offhand is empty NOW.
                     offhandHasTotem = false
                     totemSlot = -1
                     pendingSendMs = 0L
                     pendingSlotSent = -1
-                    // Don't clear failedSlots — those failures are still valid
                     refreshFromSnapshot()
                     if (totemSlot >= 0) equipTotem()
                 }
@@ -231,7 +211,6 @@ class AutoTotem : BaseModule(
         val slot = totemSlot
         if (slot < 0) return
 
-        // If we're already waiting on a server confirmation, don't fire again.
         if (pendingSendMs > 0L && System.currentTimeMillis() - pendingSendMs < PENDING_TIMEOUT_MS) return
 
         val itemData = EntityTracker.getInventoryItem(slot)
