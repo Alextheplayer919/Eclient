@@ -399,7 +399,9 @@ private fun handleAuthInput(p: PlayerAuthInputPacket, dir: PacketEvent.Direction
     } else if (selfUsingItem && now - selfLastUseBitMs > ITEM_USE_BIT_GRACE_MS) {
         selfUsingItem = false
         selfItemUseStartMs = 0L
-            private fun handleMobEffect(p: MobEffectPacket) {
+    }
+}
+        private fun handleMobEffect(p: MobEffectPacket) {
         if (p.runtimeEntityId != selfRuntimeId) return
         if (p.effectId != 15) return
         when (p.event) {
