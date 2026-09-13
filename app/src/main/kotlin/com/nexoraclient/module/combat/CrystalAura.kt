@@ -5,7 +5,6 @@ import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.*
-import com.rubidiumclient.utils.InventoryUtil
 import com.rubidiumclient.utils.MathUtil
 import com.rubidiumclient.utils.PacketUtil
 import com.rubidiumclient.utils.DiagLog
@@ -35,10 +34,6 @@ class CrystalAura : BaseModule(
         private const val PENDING_MATCH_RADIUS = 1.5f
         private const val PREDICT_HORIZON  = 32L
 
-        // Vanilla Bedrock sword item IDs (used by AutoCrystal's requireWeapon path).
-        // Not a hard filter — if your client adds custom weapons you can extend this.
-        private val SWORD_ITEM_IDS = intArrayOf(622, 276, 267, 272, 268, 325, 625, 326, 562)
-
         private val NON_SOLID = setOf(
             "minecraft:air", "minecraft:water", "minecraft:flowing_water",
             "minecraft:lava", "minecraft:flowing_lava",
@@ -46,15 +41,11 @@ class CrystalAura : BaseModule(
         )
     }
 
-    // ---------------------------------------------------------------
-    // Settings
-    // ---------------------------------------------------------------
     private val range           = float("Range",           5f,   3f,  10f)
     private val suicide         = bool ("Suicide",         false)
-    private val whileEating     = int  ("WhileEating",     0,    0,   3) // 0 none, 1 attack, 2 place, 3 both
+    private val whileEating     = int  ("WhileEating",     0,    0,   3)
 
     private val place           = bool ("Place",           true)
-    private val placeCount      = int  ("PlaceCount",      1,    1,   8)   // kept for UI compat; only 1 base used now
     private val placeDelayMs    = int  ("PlaceDelay",      20,   0,   500)
     private val wasteAmount     = int  ("WasteAmount",     1,    1,   5)
 
@@ -64,33 +55,21 @@ class CrystalAura : BaseModule(
     private val idPackets       = int  ("IDPackets",       3,    1,   15)
     private val blacklistMs     = int  ("BlacklistMs",     500,  0,   2000)
 
-    private val switchMode      = int  ("SwitchMode",      0,    0,   3)   // 0 none, 1 normal, 2 silent, 3 spoof
-    private val requireWeapon   = bool ("RequireWeapon",   false)
-
     private val removeParticles = bool ("RemoveParticles", true)
-    private val shortcut        = bool ("Shortcut",        false)
     private val log             = bool ("Log",             false)
     private val verboseLog      = bool ("VerboseLog",      false)
 
-    // ---------------------------------------------------------------
-    // Runtime state
-    // ---------------------------------------------------------------
     @Volatile private var lastExplodeMs = 0L
     @Volatile private var lastPlaceMs   = 0L
     @Volatile private var lastFailLogMs = 0L
     @Volatile private var lastChatFailMs = 0L
-
-    /** Highest crystal runtime ID we've seen the server hand out. Drives ID prediction. */
     @Volatile private var highestCrystalId = 0L
 
     private var tickJob: Job? = null
 
-    /** Sticky single base. Rebuilt only when invalid. */
     @Volatile private var lockedBase: Triple<Int, Int, Int>? = null
-    /** Sticky single target. Rebuilt only when out of range / dead / not visible. */
     @Volatile private var lockedTargetId: Long? = null
 
-    /** Crystal runtimeId -> first-attack timestamp. Prevents re-attacking unkillable crystals. */
     private val crystalBlacklist = ConcurrentHashMap<Long, Long>()
 
     private data class PendingPlace(
@@ -104,9 +83,6 @@ class CrystalAura : BaseModule(
 
     private data class ExplosionResult(val mostDamage: Float, val selfDamage: Float)
 
-    // ---------------------------------------------------------------
-    // Lifecycle
-    // ---------------------------------------------------------------
     override fun onEnable() {
         super.onEnable()
         lastExplodeMs = 0L
@@ -118,20 +94,6 @@ class CrystalAura : BaseModule(
         pendingPlaces.clear()
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
-        if (verboseLog.value) {
-            PacketEventBus.currentSession?.let { logSessionSnapshot(it) }
-        }
-    }
-
-    private fun logSessionSnapshot(session: RubidiumRelaySession) {
-        try {
-            val blockDefs = session.clientSession.peer.codecHelper.blockDefinitions
-            val itemDefs  = session.clientSession.peer.codecHelper.itemDefinitions
-            val protocol  = session.activeCodec.protocolVersion
-            DiagLog.log("CrystalAura", "SESSION: protocol=$protocol blockDefRegistry=${blockDefs?.let { it::class.simpleName } ?: "null"} itemDefRegistry=${itemDefs?.let { it::class.simpleName } ?: "null"} inventoriesServerAuthoritative=${EntityTracker.inventoriesServerAuthoritative}")
-        } catch (e: Exception) {
-            DiagLog.log("CrystalAura", "SESSION snapshot exception: ${e.message}")
-        }
     }
 
     override fun onDisable() {
@@ -144,37 +106,21 @@ class CrystalAura : BaseModule(
         super.onDisable()
     }
 
-    // ---------------------------------------------------------------
-    // Packet hook — sync predictor + non-predictive attack path
-    // ---------------------------------------------------------------
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
         when (val pkt = event.packet) {
             is AddEntityPacket -> {
                 if (!pkt.identifier.contains("crystal", ignoreCase = true)) return
-
-                // Sync predictor to the real runtime ID the server assigned.
-                if (pkt.runtimeEntityId > highestCrystalId) {
-                    highestCrystalId = pkt.runtimeEntityId
-                }
+                if (pkt.runtimeEntityId > highestCrystalId) highestCrystalId = pkt.runtimeEntityId
 
                 val now = System.currentTimeMillis()
                 val cx = pkt.position.x; val cy = pkt.position.y; val cz = pkt.position.z
 
-                // Clear diagnostics for pending placements at this location.
                 val matched = pendingPlaces.filter {
                     MathUtil.dist3(it.x, it.y, it.z, cx, cy, cz) <= PENDING_MATCH_RADIUS
                 }
-                if (matched.isNotEmpty()) {
-                    pendingPlaces.removeAll(matched)
-                    if (verboseLog.value) {
-                        PacketEventBus.currentSession?.let {
-                            sendLog(it, "✓ Onaylandı: (${cx},${cy},${cz}) crystal spawn oldu (${now - matched.first().sentAt}ms)")
-                        }
-                    }
-                }
+                if (matched.isNotEmpty()) pendingPlaces.removeAll(matched)
 
-                // Non-predictive attack path: only fire here if ID prediction is off.
                 if (!idPredict.value) {
                     val distToSelf = MathUtil.dist3(cx, cy, cz, EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ)
                     if (now - lastExplodeMs < explodeDelayMs.value) return
@@ -188,10 +134,6 @@ class CrystalAura : BaseModule(
                         attackCrystal(session, pkt.runtimeEntityId)
                         lastExplodeMs = now
                         sendLog(session, "Patlatıldı (anlık) - ${dmg.mostDamage.toInt()} hasar")
-                    } else {
-                        PacketEventBus.currentSession?.let {
-                            logFail(it, "Atlandı (anlık) - kendi hasarım yüksek (${dmg.selfDamage.toInt()} > ${dmg.mostDamage.toInt()})")
-                        }
                     }
                 }
             }
@@ -204,9 +146,6 @@ class CrystalAura : BaseModule(
         }
     }
 
-    // ---------------------------------------------------------------
-    // Tick loop
-    // ---------------------------------------------------------------
     private suspend fun tickLoop() {
         while (currentCoroutineContext().isActive) {
             if (isEnabled) {
@@ -217,22 +156,12 @@ class CrystalAura : BaseModule(
         }
     }
 
-    @Volatile private var loggedSessionOnce = false
-
     private fun tick() {
         val session = PacketEventBus.currentSession ?: return
-
-        if (verboseLog.value && !loggedSessionOnce) {
-            loggedSessionOnce = true
-            logSessionSnapshot(session)
-        }
-        if (!verboseLog.value) loggedSessionOnce = false
-
         val now = System.currentTimeMillis()
         pruneBlacklist(now)
         checkTimedOutPlacements(session, now)
 
-        // Eat detection: selfUsingItem covers eating, drinking, drawing a bow, etc.
         val eating = EntityTracker.selfUsingItem
         val allowPlace  = !eating || whileEating.value == 2 || whileEating.value == 3
         val allowAttack = !eating || whileEating.value == 1 || whileEating.value == 3
@@ -252,9 +181,6 @@ class CrystalAura : BaseModule(
         }
     }
 
-    // ---------------------------------------------------------------
-    // Target selection (sticky)
-    // ---------------------------------------------------------------
     private fun pickTarget(): EntityTracker.TrackedEntity? {
         val locked = lockedTargetId
         if (locked != null) {
@@ -267,9 +193,6 @@ class CrystalAura : BaseModule(
             }
     }
 
-    // ---------------------------------------------------------------
-    // Breaking
-    // ---------------------------------------------------------------
     private fun tryExplodeBest(session: RubidiumRelaySession, now: Long) {
         val crystals = EntityTracker.getCrystals(range.value)
         if (crystals.isEmpty()) return
@@ -287,8 +210,6 @@ class CrystalAura : BaseModule(
             attackCrystal(session, bestId)
             lastExplodeMs = now
             sendLog(session, "Patlatıldı - ${bestDamage.toInt()} hasar")
-        } else if (verboseLog.value) {
-            logFail(session, "${crystals.size} kristal görünüyor ama hiçbiri güvenli/hasarlı değil")
         }
     }
 
@@ -306,32 +227,32 @@ class CrystalAura : BaseModule(
         if (timedOut.isEmpty()) return
         pendingPlaces.removeAll(timedOut)
         for (p in timedOut) {
-            logFail(session, "REDDEDİLDİ (${p.x},${p.y},${p.z}) blockId=${p.blockId} itemNetId=${p.itemNetId} hotbarSlot=${p.hotbarSlot} — ${now - p.sentAt}ms içinde AddEntityPacket gelmedi")
+            logFail(session, "REJECTED (${p.x},${p.y},${p.z}) — no spawn in ${now - p.sentAt}ms")
         }
     }
 
-    // ---------------------------------------------------------------
-    // Placing — sticky single base, multi-place, ID predict
-    // ---------------------------------------------------------------
     private fun tryPlace(session: RubidiumRelaySession, now: Long, target: EntityTracker.TrackedEntity) {
         val dbg: ((String) -> Unit)? = if (verboseLog.value) { msg -> DiagLog.log("CrystalAura", msg) } else null
 
-        // Sticky: keep the same base until it stops being valid.
-        var base = lockedBase?.takeIf { isBaseStillValid(it) }
-        if (base == null) {
-            base = buildBestBase(target, dbg)
-            lockedBase = base
+        val footBase = findAdjacentFootBase(target, dbg)
+        val base: Triple<Int, Int, Int>?
+        if (footBase != null) {
+            if (lockedBase != footBase) {
+                dbg?.invoke("Foot base override: $footBase (was $lockedBase)")
+            }
+            base = footBase
+            lockedBase = footBase
+        } else {
+            base = lockedBase?.takeIf { isBaseStillValid(it) } ?: run {
+                val scanned = buildBestBase(target, dbg)
+                lockedBase = scanned
+                scanned
+            }
             if (base == null) {
-                logFail(session, "Uygun zemin bulunamadı (hasTerrainData=${WorldBlockTracker.hasAnyTerrainData()}) | ${WorldBlockTracker.debugSummary()}")
+                logFail(session, "Uygun zemin bulunamadı | ${WorldBlockTracker.debugSummary()}")
                 return
             }
             dbg?.invoke("LOCKED base=$base")
-        }
-
-        if (verboseLog.value) {
-            val realBlockId = WorldBlockTracker.getBlockIdentifier(base.first, base.second, base.third)
-            val aboveId = WorldBlockTracker.getBlockIdentifier(base.first, base.second + 1, base.third)
-            dbg?.invoke("TARGET base=$base realBlockId=$realBlockId above=$aboveId")
         }
 
         val prepared = PlacementUtil.prepareItemForUse(session, CRYSTAL_ID, debugSink = dbg) ?: run {
@@ -342,7 +263,6 @@ class CrystalAura : BaseModule(
 
         val blockId = WorldBlockTracker.getBlockIdentifier(base.first, base.second, base.third)
         if (blockId == null) {
-            dbg?.invoke("ATLANDI: WorldBlockTracker (${base.first},${base.second},${base.third}) için veri döndürmedi")
             PlacementUtil.revert(session, prepared)
             lockedBase = null
             return
@@ -351,7 +271,6 @@ class CrystalAura : BaseModule(
         val blockPos = Vector3i.from(base.first, base.second, base.third)
         var placed = 0
 
-        // Multi-place: place wasteAmount crystals at the same base in one tick.
         for (i in 0 until wasteAmount.value) {
             val ok = PlacementUtil.sendPlacementUseRaw(
                 session   = session,
@@ -372,8 +291,6 @@ class CrystalAura : BaseModule(
                 hotbarSlot = prepared.slot
             ))
 
-            // ID prediction: attack the runtime IDs we expect the server to hand out
-            // for the crystals we just placed, BEFORE waiting for AddEntityPacket.
             if (idPredict.value) fireIdPredictions(session)
         }
 
@@ -383,16 +300,40 @@ class CrystalAura : BaseModule(
             lastPlaceMs = now
             sendLog(session, "Yerleştirme x$placed @ $base")
         } else {
-            logFail(session, "Yerleştirme paketi gönderilemedi (exception)")
             lockedBase = null
         }
     }
 
-    /**
-     * Blind-fire attack transactions at the runtime IDs we expect the crystals we just
-     * placed to occupy. Bedrock assigns entity IDs monotonically on most servers, so
-     * highestCrystalId+1..+N usually covers the newly spawned crystals.
-     */
+    private fun findAdjacentFootBase(target: EntityTracker.TrackedEntity, dbg: ((String) -> Unit)?): Triple<Int, Int, Int>? {
+        if (!WorldBlockTracker.hasAnyTerrainData()) return null
+
+        val tx = floor(target.x).toInt()
+        val ty = floor(target.y).toInt() - 1
+        val tz = floor(target.z).toInt()
+
+        var bestPos: Triple<Int, Int, Int>? = null
+        var bestDmg = -1f
+        for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
+            val bx = tx + dx; val bz = tz + dz
+            val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
+            if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
+            val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
+            if (above != null && above !in NON_SOLID) continue
+
+            val dmg = simulateExplosionDamage(bx + 0.5f, ty + 2f, bz + 0.5f)
+            val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+            if (eff > bestDmg) {
+                bestDmg = eff
+                bestPos = Triple(bx, ty, bz)
+            }
+        }
+        if (bestPos != null && bestDmg > 0f) {
+            dbg?.invoke("PRIORITY adjacent base $bestPos dmg=${bestDmg.toInt()}")
+            return bestPos
+        }
+        return null
+    }
+
     private fun fireIdPredictions(session: RubidiumRelaySession) {
         var i = 1L
         var fired = 0
@@ -408,9 +349,6 @@ class CrystalAura : BaseModule(
         }
     }
 
-    // ---------------------------------------------------------------
-    // Base validity + search
-    // ---------------------------------------------------------------
     private fun isBaseStillValid(pos: Triple<Int, Int, Int>): Boolean {
         val id = WorldBlockTracker.getBlockIdentifier(pos.first, pos.second, pos.third) ?: return false
         if (id != "minecraft:obsidian" && id != "minecraft:bedrock") return false
@@ -423,70 +361,39 @@ class CrystalAura : BaseModule(
         return d <= range.value
     }
 
-    /**
-     * Returns the SINGLE best base for this target. No queue, no placeCount-style spread.
-     */
     private fun buildBestBase(target: EntityTracker.TrackedEntity, dbg: ((String) -> Unit)?): Triple<Int, Int, Int>? {
-    if (!WorldBlockTracker.hasAnyTerrainData()) return null
+        if (!WorldBlockTracker.hasAnyTerrainData()) return null
 
-    val tx = floor(target.x).toInt()
-    val ty = floor(target.y).toInt() - 1
-    val tz = floor(target.z).toInt()
+        val tx = floor(target.x).toInt()
+        val ty = floor(target.y).toInt() - 1
+        val tz = floor(target.z).toInt()
 
-    // PRIORITY: scan the 8 blocks AROUND the target at feet-1 level.
-    // Crystal goes NEXT TO the player, not inside their hitbox.
-    var bestPos: Triple<Int, Int, Int>? = null
-    var bestDmg = -1f
-    for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
-        val bx = tx + dx; val bz = tz + dz
-        val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
-        if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
-        val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
-        if (above != null && above !in NON_SOLID) continue
+        val candidates = LinkedHashSet<Triple<Int, Int, Int>>()
+        candidates.addAll(searchPlaceBase())
 
-        val dmg = simulateExplosionDamage(bx + 0.5f, ty + 2f, bz + 0.5f)
-        val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
-        if (eff > bestDmg) {
-            bestDmg = eff
-            bestPos = Triple(bx, ty, bz)
+        var tFound = 0
+        for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
+            val bx = tx + dx; val bz = tz + dz
+            val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
+            if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
+            val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
+            if (above != null && above !in NON_SOLID) continue
+            if (candidates.add(Triple(bx, ty, bz))) tFound++
         }
-    }
-    if (bestPos != null && bestDmg > 0f) {
-        dbg?.invoke("PRIORITY adjacent base $bestPos dmg=${bestDmg.toInt()}")
-        return bestPos
-    }
 
-    // Fallback: self sphere + 8-neighbor ring around target's feet.
-    val candidates = LinkedHashSet<Triple<Int, Int, Int>>()
-    candidates.addAll(searchPlaceBase())
-    dbg?.invoke("Self scan: ${candidates.size}")
+        if (candidates.isEmpty()) return null
 
-    var tFound = 0
-    for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
-        val bx = tx + dx; val bz = tz + dz
-        val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
-        if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
-        val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
-        if (above != null && above !in NON_SOLID) continue
-        if (candidates.add(Triple(bx, ty, bz))) tFound++
-    }
-    dbg?.invoke("Target ring: +$tFound")
+        val scored = candidates.mapNotNull { p ->
+            val cx = p.first + 0.5f; val cy = p.second + 2f; val cz = p.third + 0.5f
+            val dmg = simulateExplosionDamage(cx, cy, cz)
+            val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+            if (eff > 0f || suicide.value) Pair(p, eff) else null
+        }
 
-    if (candidates.isEmpty()) {
-        dbg?.invoke("FEET DEBUG: hasTerrain=${WorldBlockTracker.hasAnyTerrainData()} | ${WorldBlockTracker.debugSummary()}")
-        return null
+        return scored.maxByOrNull { it.second }?.first
     }
 
-    val scored = candidates.mapNotNull { p ->
-        val cx = p.first + 0.5f; val cy = p.second + 2f; val cz = p.third + 0.5f
-        val dmg = simulateExplosionDamage(cx, cy, cz)
-        val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
-        if (eff > 0f || suicide.value) Pair(p, eff) else null
-    }
-    dbg?.invoke("Hasar hesaplanan ${scored.size}/${candidates.size}")
-
-    return scored.maxByOrNull { it.second }?.first
-    }    private fun searchPlaceBase(): List<Triple<Int, Int, Int>> {
+    private fun searchPlaceBase(): List<Triple<Int, Int, Int>> {
         if (!WorldBlockTracker.hasAnyTerrainData()) return emptyList()
         val r  = floor(range.value).toInt()
         val cx = floor(EntityTracker.selfX).toInt()
@@ -567,6 +474,12 @@ class CrystalAura : BaseModule(
         return false
     }
 
+    private fun attackCrystal(session: RubidiumRelaySession, runtimeId: Long) {
+        PacketUtil.sendSwing(session)
+        PacketUtil.sendAttack(session, runtimeId)
+        crystalBlacklist[runtimeId] = System.currentTimeMillis()
+    }
+
     private fun sendLog(session: RubidiumRelaySession, message: String) {
         if (!log.value) return
         try {
@@ -579,7 +492,7 @@ class CrystalAura : BaseModule(
                 setMessage("§b[CrystalAura]§f $message")
                 setFilteredMessage("")
             })
-        } catch (_: Exception) {}
+                } catch (_: Exception) {}
     }
 
     private fun logFail(session: RubidiumRelaySession, message: String) {
@@ -593,9 +506,4 @@ class CrystalAura : BaseModule(
         lastChatFailMs = now
         sendLog(session, "⚠ $message")
     }
-private fun attackCrystal(session: RubidiumRelaySession, runtimeId: Long) {
-    PacketUtil.sendSwing(session)
-    PacketUtil.sendAttack(session, runtimeId)
-    crystalBlacklist[runtimeId] = System.currentTimeMillis()
-}
 }
