@@ -433,22 +433,30 @@ class CrystalAura : BaseModule(
     val ty = floor(target.y).toInt() - 1
     val tz = floor(target.z).toInt()
 
-    // PRIORITY: obsidian/bedrock directly under the target's feet.
-    val feetId = WorldBlockTracker.getBlockIdentifier(tx, ty, tz)
-    if (feetId == "minecraft:obsidian" || feetId == "minecraft:bedrock") {
-        val above = WorldBlockTracker.getBlockIdentifier(tx, ty + 1, tz)
-        if (above == null || above in NON_SOLID) {
-            val dmg = simulateExplosionDamage(tx + 0.5f, ty + 2f, tz + 0.5f)
-            val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
-            if (eff > 0f || suicide.value) {
-                dbg?.invoke("PRIORITY foot base ($tx,$ty,$tz) dmg=${dmg.mostDamage.toInt()} self=${dmg.selfDamage.toInt()}")
-                return Triple(tx, ty, tz)
-            }
-            dbg?.invoke("Foot base exists but self-damage too high (dmg=${dmg.mostDamage.toInt()} self=${dmg.selfDamage.toInt()})")
+    // PRIORITY: scan the 8 blocks AROUND the target at feet-1 level.
+    // Crystal goes NEXT TO the player, not inside their hitbox.
+    var bestPos: Triple<Int, Int, Int>? = null
+    var bestDmg = -1f
+    for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
+        val bx = tx + dx; val bz = tz + dz
+        val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
+        if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
+        val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
+        if (above != null && above !in NON_SOLID) continue
+
+        val dmg = simulateExplosionDamage(bx + 0.5f, ty + 2f, bz + 0.5f)
+        val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+        if (eff > bestDmg) {
+            bestDmg = eff
+            bestPos = Triple(bx, ty, bz)
         }
     }
+    if (bestPos != null && bestDmg > 0f) {
+        dbg?.invoke("PRIORITY adjacent base $bestPos dmg=${bestDmg.toInt()}")
+        return bestPos
+    }
 
-    // Fallback: normal scan (self sphere + 8-neighbor ring around target's feet)
+    // Fallback: self sphere + 8-neighbor ring around target's feet.
     val candidates = LinkedHashSet<Triple<Int, Int, Int>>()
     candidates.addAll(searchPlaceBase())
     dbg?.invoke("Self scan: ${candidates.size}")
