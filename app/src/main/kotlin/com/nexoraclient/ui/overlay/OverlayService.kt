@@ -378,7 +378,6 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         menuView = composeView {
             val moduleVersion by ModuleManager.version.collectAsState()
             val uiStyle = remember { OverlayUiStore.get(this@OverlayService) }
-            var searchQuery by remember { mutableStateOf("") }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -391,46 +390,27 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     .background(Color.Transparent)
                     .pointerInput(Unit) { detectTapGestures { hideMenu() } }
             ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Global module search bar — works in every menu style: shows
-                    // each module's category and lets you toggle it from the results.
-                    MenuSearchHeader(
-                        query = searchQuery,
-                        onQueryChange = { q ->
-                            searchQuery = q
-                            if (q.isNotBlank()) { GridSettingsPopup.close(); GridExtraPopup.close() }
-                        }
+                if (uiStyle == OverlayUiStyle.GRID) {
+                    GridMenu(
+                        onClose           = { hideMenu() },
+                        moduleVersion     = moduleVersion,
+                        onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() },
+                        modifier          = Modifier.fillMaxSize()
                     )
-                    Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                        if (searchQuery.isNotBlank()) {
-                            ModuleSearchPanel(
-                                query             = searchQuery,
-                                moduleVersion     = moduleVersion,
-                                onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() }
-                            )
-                        } else if (uiStyle == OverlayUiStyle.GRID) {
-                            GridMenu(
-                                onClose           = { hideMenu() },
-                                moduleVersion     = moduleVersion,
-                                onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() },
-                                modifier          = Modifier.fillMaxSize()
-                            )
-                        } else if (uiStyle == OverlayUiStyle.CSGO) {
-                            CsgoMenu(
-                                onClose           = { hideMenu() },
-                                moduleVersion     = moduleVersion,
-                                onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() },
-                                modifier          = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            HileMenu(
-                                onClose               = { hideMenu() },
-                                moduleVersion         = moduleVersion,
-                                onShortcutChanged     = { refreshShortcuts(); refreshCommandShortcuts() },
-                                modifier              = Modifier.align(Alignment.CenterStart)
-                            )
-                        }
-                    }
+                } else if (uiStyle == OverlayUiStyle.CSGO) {
+                    CsgoMenu(
+                        onClose           = { hideMenu() },
+                        moduleVersion     = moduleVersion,
+                        onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() },
+                        modifier          = Modifier.fillMaxSize()
+                    )
+                } else {
+                    HileMenu(
+                        onClose               = { hideMenu() },
+                        moduleVersion         = moduleVersion,
+                        onShortcutChanged     = { refreshShortcuts(); refreshCommandShortcuts() },
+                        modifier              = Modifier.align(Alignment.CenterStart)
+                    )
                 }
             }
         }
@@ -1379,7 +1359,17 @@ private fun GridModuleRow(module: BaseModule, onShortcutChanged: () -> Unit) {
 private fun ModuleSettingsPopup(
     module            : BaseModule,
     onShortcutChanged : () -> Unit,
-    onDismiss         : () -> Unit
+    onDismiss         : () -> Unit,
+    // Frame colors default to the grid's dark palette; other menus can pass
+    // themed values (the CS:GO window does) without duplicating the popup.
+    headerBrushTop    : Color = GridHeaderTop,
+    headerBrushBottom : Color = GridHeaderBottom,
+    panelBrushTop     : Color = GridPanelTop,
+    panelBrushBottom  : Color = GridPanelBottom,
+    borderColor       : Color = GridBorderOn,
+    glowColor         : Color = GridGlow,
+    titleColor        : Color = GridTextOn,
+    mutedColor        : Color = GridTextDim
 ) {
     val screenHeightDp = LocalConfiguration.current.screenHeightDp.dp
     val maxPopupHeight = (screenHeightDp - 120.dp).coerceAtLeast(160.dp)
@@ -1397,17 +1387,17 @@ private fun ModuleSettingsPopup(
             modifier = Modifier
                 .widthIn(min = 220.dp, max = 300.dp)
                 .heightIn(max = maxPopupHeight)
-                .shadow(10.dp, RoundedCornerShape(14.dp), ambientColor = GridGlow, spotColor = GridGlow)
+                .shadow(10.dp, RoundedCornerShape(14.dp), ambientColor = glowColor, spotColor = glowColor)
                 .clip(RoundedCornerShape(14.dp))
-                .background(Brush.verticalGradient(listOf(GridPanelTop, GridPanelBottom)))
-                .border(1.dp, GridBorderOn, RoundedCornerShape(14.dp))
+                .background(Brush.verticalGradient(listOf(panelBrushTop, panelBrushBottom)))
+                .border(1.dp, borderColor, RoundedCornerShape(14.dp))
                 // Kart içine tıklamalar dışarıdaki dismiss'i tetiklemesin.
                 .pointerInput(module) { detectTapGestures { } }
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(GridHeaderTop, GridHeaderBottom)))
+                    .background(Brush.verticalGradient(listOf(headerBrushTop, headerBrushBottom)))
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -1416,7 +1406,7 @@ private fun ModuleSettingsPopup(
                     module.name,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Black,
-                    color = GridTextOn,
+                    color = titleColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -1425,7 +1415,7 @@ private fun ModuleSettingsPopup(
                     "\u2715",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
-                    color = GridTextOn,
+                    color = titleColor,
                     modifier = Modifier
                         .clickable { onDismiss() }
                         .padding(4.dp)
@@ -1440,7 +1430,7 @@ private fun ModuleSettingsPopup(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (module.settings.isEmpty()) {
-                    Text("Bu modülde ayarlanabilir bir şey yok", fontSize = 11.sp, color = GridTextDim)
+                    Text("Bu modülde ayarlanabilir bir şey yok", fontSize = 11.sp, color = mutedColor)
                 } else {
                     module.settings.forEach { s ->
                         if (module is ComboShortcut && s.name == "Modules") return@forEach
@@ -2346,8 +2336,48 @@ private fun SearchResultRow(module: BaseModule, onShortcutChanged: () -> Unit) {
 // ─────────────────────────────────────────────────────────────────────────
 // CS:GO style click GUI — layout idea follows WClient's OverlayClickGUI
 // (centered window, category tab sidebar, module rows), restyled to the
-// Rubidium/Catppuccin theme. Settings reuse the grid's service-safe popup.
+// Rubidium/Catppuccin theme. Own in-window module search, plus the Config
+// and Friends sections from the classic menu as sidebar tabs. Settings
+// reuse a themed variant of the grid's service-safe popup.
 // ─────────────────────────────────────────────────────────────────────────
+private enum class CsgoTab(val display: String, val category: ModuleCategory?) {
+    COMBAT("Combat", ModuleCategory.COMBAT),
+    MOVEMENT("Movement", ModuleCategory.MOVEMENT),
+    VISUAL("Visual", ModuleCategory.VISUAL),
+    PLAYER("Player", ModuleCategory.PLAYER),
+    WORLD("World", ModuleCategory.WORLD),
+    MISC("Misc", ModuleCategory.MISC),
+    CONFIG("Config", null),
+    FRIENDS("Friends", null)
+}
+
+@Composable
+private fun CsgoSidebarTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (selected) RubidiumAccent.copy(0.16f) else Color.Transparent)
+            .border(
+                1.dp,
+                if (selected) RubidiumAccent.copy(0.55f) else Color.Transparent,
+                RoundedCornerShape(6.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 7.dp)
+    ) {
+        Text(
+            label.uppercase(),
+            fontSize = 10.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) RubidiumAccentLight else RubidiumOnSurfaceDim,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
 @Composable
 private fun CsgoMenu(
     onClose           : () -> Unit,
@@ -2359,8 +2389,12 @@ private fun CsgoMenu(
     val winW = (cfg.screenWidthDp.dp - 28.dp).coerceAtMost(620.dp)
     val winH = (cfg.screenHeightDp.dp - 36.dp).coerceAtMost(360.dp)
 
-    var category by remember { mutableStateOf(GridCategory.COMBAT) }
-    val mods = remember(moduleVersion, category) { ModuleManager.byCategory(category.category) }
+    var tab by remember { mutableStateOf(CsgoTab.COMBAT) }
+    var searchQuery by remember { mutableStateOf("") }
+    val mods = remember(moduleVersion, tab) {
+        tab.category?.let { ModuleManager.byCategory(it) } ?: emptyList()
+    }
+    val searching = searchQuery.isNotBlank()
 
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
@@ -2416,83 +2450,96 @@ private fun CsgoMenu(
 
             HorizontalDivider(color = RubidiumOutlineStrong)
 
-            // ── Category sidebar + module list ──
-            Row(modifier = Modifier.fillMaxSize()) {
-                Column(
-                    modifier = Modifier
-                        .width(92.dp)
-                        .fillMaxHeight()
-                        .background(RubidiumSurfaceVar.copy(alpha = 0.55f))
-                        .border(1.dp, RubidiumOutline.copy(0.6f))
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 6.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    GridCategory.entries.forEach { gc ->
-                        val sel = gc == category
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(if (sel) RubidiumAccent.copy(0.16f) else Color.Transparent)
-                                .border(
-                                    1.dp,
-                                    if (sel) RubidiumAccent.copy(0.55f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .clickable { category = gc }
-                                .padding(horizontal = 10.dp, vertical = 7.dp)
-                        ) {
-                            Text(
-                                gc.display.uppercase(),
-                                fontSize = 10.sp,
-                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
-                                color = if (sel) RubidiumAccentLight else RubidiumOnSurfaceDim,
-                                fontFamily = FontFamily.Monospace,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+            // ── In-window module search: browse categories OR just type ──
+            MenuSearchHeader(
+                query = searchQuery,
+                onQueryChange = { q ->
+                    searchQuery = q
+                    if (q.isNotBlank()) GridSettingsPopup.close()
                 }
+            )
 
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            category.display.uppercase(),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Black,
-                            color = RubidiumOnBackground,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                            "${mods.size} modules",
-                            fontSize = 9.sp,
-                            color = RubidiumOnSurfaceDim,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-
-                    if (mods.isEmpty()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("Empty", fontSize = 10.sp, color = RubidiumOnSurfaceDim)
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                if (searching) {
+                    ModuleSearchPanel(
+                        query             = searchQuery,
+                        moduleVersion     = moduleVersion,
+                        onShortcutChanged = onShortcutChanged
+                    )
+                } else {
+                    // ── Category sidebar + content ──
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Column(
+                            modifier = Modifier
+                                .width(92.dp)
+                                .fillMaxHeight()
+                                .background(RubidiumSurfaceVar.copy(alpha = 0.55f))
+                                .border(1.dp, RubidiumOutline.copy(0.6f))
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 6.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            items(mods) { mod ->
-                                CsgoModuleRow(module = mod, onShortcutChanged = onShortcutChanged)
+                            CsgoTab.entries.forEach { t ->
+                                if (t == CsgoTab.CONFIG) {
+                                    // Divider separates module categories from sections
+                                    HorizontalDivider(
+                                        color = RubidiumOutline.copy(0.7f),
+                                        modifier = Modifier.padding(vertical = 3.dp)
+                                    )
+                                }
+                                CsgoSidebarTab(label = t.display, selected = tab == t) { tab = t }
+                            }
+                        }
+
+                        when (tab) {
+                            CsgoTab.CONFIG -> Box(
+                                Modifier.weight(1f).fillMaxHeight()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                            ) { ConfigSection() }
+                            CsgoTab.FRIENDS -> Box(
+                                Modifier.weight(1f).fillMaxHeight()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                            ) { FriendsSection() }
+                            else -> Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        tab.display.uppercase(),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = RubidiumOnBackground,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        "${mods.size} modules",
+                                        fontSize = 9.sp,
+                                        color = RubidiumOnSurfaceDim,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+
+                                if (mods.isEmpty()) {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Text("Empty", fontSize = 10.sp, color = RubidiumOnSurfaceDim)
+                                    }
+                                } else {
+                                    LazyColumn(
+                                        modifier = Modifier.fillMaxSize(),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        items(mods) { mod ->
+                                            CsgoModuleRow(module = mod, onShortcutChanged = onShortcutChanged)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2500,13 +2547,21 @@ private fun CsgoMenu(
             }
         }
 
-        // Module settings popup — same service-safe fake-Dialog the grid uses.
+        // Module settings popup — grid's service-safe fake-Dialog, themed to match.
         val popupModule = GridSettingsPopup.current
         if (popupModule != null) {
             ModuleSettingsPopup(
                 module            = popupModule,
                 onShortcutChanged = onShortcutChanged,
-                onDismiss         = { GridSettingsPopup.close() }
+                onDismiss         = { GridSettingsPopup.close() },
+                headerBrushTop    = RubidiumSurfaceVar,
+                headerBrushBottom = RubidiumSurface,
+                panelBrushTop     = RubidiumBackground,
+                panelBrushBottom  = RubidiumSurface,
+                borderColor       = RubidiumAccent.copy(0.5f),
+                glowColor         = RubidiumAccent.copy(0.08f),
+                titleColor        = RubidiumOnBackground,
+                mutedColor        = RubidiumOnSurfaceDim
             )
         }
     }
