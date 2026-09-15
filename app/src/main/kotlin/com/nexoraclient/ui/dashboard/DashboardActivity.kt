@@ -122,7 +122,8 @@ private object SelectedAppStore {
  *  preference is stored here for now — OverlayService doesn't read it yet. */
 enum class OverlayUiStyle(val label: String, val description: String) {
     CLASSIC("Classic", "Classic"),
-    GRID("Grid Menu", "Grid")
+    GRID("Grid Menu", "Grid"),
+    CSGO("CS:GO", "Windowed click GUI")
 }
 
 

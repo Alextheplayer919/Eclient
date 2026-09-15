@@ -378,6 +378,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         menuView = composeView {
             val moduleVersion by ModuleManager.version.collectAsState()
             val uiStyle = remember { OverlayUiStore.get(this@OverlayService) }
+            var searchQuery by remember { mutableStateOf("") }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -390,20 +391,46 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     .background(Color.Transparent)
                     .pointerInput(Unit) { detectTapGestures { hideMenu() } }
             ) {
-                if (uiStyle == OverlayUiStyle.GRID) {
-                    GridMenu(
-                        onClose           = { hideMenu() },
-                        moduleVersion     = moduleVersion,
-                        onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() },
-                        modifier          = Modifier.fillMaxSize()
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Global module search bar — works in every menu style: shows
+                    // each module's category and lets you toggle it from the results.
+                    MenuSearchHeader(
+                        query = searchQuery,
+                        onQueryChange = { q ->
+                            searchQuery = q
+                            if (q.isNotBlank()) { GridSettingsPopup.close(); GridExtraPopup.close() }
+                        }
                     )
-                } else {
-                    HileMenu(
-                        onClose               = { hideMenu() },
-                        moduleVersion         = moduleVersion,
-                        onShortcutChanged     = { refreshShortcuts(); refreshCommandShortcuts() },
-                        modifier              = Modifier.align(Alignment.CenterStart)
-                    )
+                    Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                        if (searchQuery.isNotBlank()) {
+                            ModuleSearchPanel(
+                                query             = searchQuery,
+                                moduleVersion     = moduleVersion,
+                                onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() }
+                            )
+                        } else if (uiStyle == OverlayUiStyle.GRID) {
+                            GridMenu(
+                                onClose           = { hideMenu() },
+                                moduleVersion     = moduleVersion,
+                                onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() },
+                                modifier          = Modifier.fillMaxSize()
+                            )
+                        } else if (uiStyle == OverlayUiStyle.CSGO) {
+                            CsgoMenu(
+                                onClose           = { hideMenu() },
+                                moduleVersion     = moduleVersion,
+                                onShortcutChanged = { refreshShortcuts(); refreshCommandShortcuts() },
+                                modifier          = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            HileMenu(
+                                onClose               = { hideMenu() },
+                                moduleVersion         = moduleVersion,
+                                onShortcutChanged     = { refreshShortcuts(); refreshCommandShortcuts() },
+                                modifier              = Modifier.align(Alignment.CenterStart)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2142,6 +2169,406 @@ private fun ShortcutToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit)
             fontSize = 11.sp,
             color = if (checked) RubidiumOnBackground else RubidiumOnSurfaceDim,
             fontWeight = if (checked) FontWeight.SemiBold else FontWeight.Normal
+        )
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Global module search — rendered above every overlay menu style.
+// ─────────────────────────────────────────────────────────────────────────
+@Composable
+private fun MenuSearchHeader(
+    query         : String,
+    onQueryChange : (String) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(RubidiumBackground.copy(alpha = 0.85f))
+            .border(1.dp, RubidiumOutline.copy(alpha = 0.6f))
+            // Consume taps so the search bar area doesn't close the menu.
+            .pointerInput(Unit) { detectTapGestures { } }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "Search",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = RubidiumAccentLight,
+            fontFamily = FontFamily.Monospace
+        )
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            singleLine = true,
+            placeholder = { Text("Search modules…", fontSize = 11.sp, color = RubidiumOnSurfaceDim) },
+            modifier = Modifier.weight(1f).height(40.dp),
+            textStyle = androidx.compose.ui.text.TextStyle(
+                fontSize = 12.sp, color = RubidiumOnSurface, fontFamily = FontFamily.Monospace
+            ),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor   = RubidiumAccent,
+                unfocusedBorderColor = RubidiumOutline
+            )
+        )
+        if (query.isNotBlank()) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(RubidiumSurfaceVar)
+                    .border(1.dp, RubidiumOutline, CircleShape)
+                    .clickable { onQueryChange("") },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("\u00D7", fontSize = 13.sp, color = RubidiumOnSurfaceDim, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+/**
+ * Search results: every module whose name (or category) matches the query,
+ * with a category chip and a working toggle — replaces the menu content
+ * while a query is typed.
+ */
+@Composable
+private fun ModuleSearchPanel(
+    query             : String,
+    moduleVersion     : Int,
+    onShortcutChanged : () -> Unit
+) {
+    val results = remember(query, moduleVersion) {
+        val q = query.trim().lowercase()
+        ModuleManager.getAll()
+            .filter {
+                it.name.lowercase().contains(q) ||
+                it.category.displayName.lowercase().contains(q)
+            }
+            .sortedWith(compareBy({ it.category.ordinal }, { it.name.lowercase() }))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(RubidiumBackground.copy(alpha = 0.9f))
+            .border(1.dp, RubidiumOutline.copy(alpha = 0.6f))
+            .pointerInput(Unit) { detectTapGestures { } }
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text(
+            "${results.size} match${if (results.size == 1) "" else "es"}",
+            fontSize = 10.sp,
+            color = RubidiumOnSurfaceDim,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+        if (results.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No modules match \"$query\"", fontSize = 12.sp, color = RubidiumOnSurfaceDim)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                items(results) { mod ->
+                    SearchResultRow(module = mod, onShortcutChanged = onShortcutChanged)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchResultRow(module: BaseModule, onShortcutChanged: () -> Unit) {
+    var enabled by remember { mutableStateOf(module.isEnabled) }
+    LaunchedEffect(module) { module.enabledFlow.collect { enabled = it } }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (enabled) RubidiumSurfaceVar else RubidiumSurface)
+            .border(
+                if (enabled) 1.5.dp else 1.dp,
+                if (enabled) RubidiumModuleActiveBorder else RubidiumOutline.copy(0.6f),
+                RoundedCornerShape(10.dp)
+            )
+            .clickable { ModuleManager.toggle(module); onShortcutChanged() }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            module.name,
+            fontSize = 13.sp,
+            fontWeight = if (enabled) FontWeight.Bold else FontWeight.Medium,
+            color = if (enabled) RubidiumOnBackground else RubidiumOnSurface,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        // Category chip — the search points out where the module lives.
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50.dp))
+                .background(RubidiumAccent.copy(0.14f))
+                .border(1.dp, RubidiumAccent.copy(0.45f), RoundedCornerShape(50.dp))
+                .padding(horizontal = 8.dp, vertical = 3.dp)
+        ) {
+            Text(
+                module.category.displayName.uppercase(),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = RubidiumAccentLight,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Switch(
+            checked = enabled,
+            onCheckedChange = { ModuleManager.toggle(module); onShortcutChanged() },
+            colors = SwitchDefaults.colors(
+                checkedTrackColor   = RubidiumModuleActiveBorder,
+                checkedThumbColor   = Color.White,
+                uncheckedTrackColor = RubidiumOutlineStrong,
+                uncheckedThumbColor = RubidiumOnSurfaceDim
+            ),
+            modifier = Modifier.scale(0.8f).height(18.dp)
+        )
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// CS:GO style click GUI — layout idea follows WClient's OverlayClickGUI
+// (centered window, category tab sidebar, module rows), restyled to the
+// Rubidium/Catppuccin theme. Settings reuse the grid's service-safe popup.
+// ─────────────────────────────────────────────────────────────────────────
+@Composable
+private fun CsgoMenu(
+    onClose           : () -> Unit,
+    moduleVersion     : Int,
+    onShortcutChanged : () -> Unit,
+    modifier          : Modifier = Modifier
+) {
+    val cfg  = LocalConfiguration.current
+    val winW = (cfg.screenWidthDp.dp - 28.dp).coerceAtMost(620.dp)
+    val winH = (cfg.screenHeightDp.dp - 36.dp).coerceAtMost(360.dp)
+
+    var category by remember { mutableStateOf(GridCategory.COMBAT) }
+    val mods = remember(moduleVersion, category) { ModuleManager.byCategory(category.category) }
+
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .width(winW)
+                .height(winH)
+                .shadow(12.dp, RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(14.dp))
+                .background(RubidiumBackground.copy(alpha = 0.94f))
+                .border(1.dp, RubidiumOutlineStrong, RoundedCornerShape(14.dp))
+                // Panel taps must not close the menu (root closes on outside taps).
+                .pointerInput(Unit) { detectTapGestures { } }
+        ) {
+            // ── Header bar ──
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(RubidiumSurface)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "ECLIENT",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Black,
+                        color = RubidiumAccentLight,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        "click gui",
+                        fontSize = 10.sp,
+                        color = RubidiumOnSurfaceDim,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(RubidiumError.copy(0.15f))
+                        .border(1.dp, RubidiumError.copy(0.4f), CircleShape)
+                        .clickable { onClose() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("x", color = RubidiumError, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            HorizontalDivider(color = RubidiumOutlineStrong)
+
+            // ── Category sidebar + module list ──
+            Row(modifier = Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier
+                        .width(92.dp)
+                        .fillMaxHeight()
+                        .background(RubidiumSurfaceVar.copy(alpha = 0.55f))
+                        .border(1.dp, RubidiumOutline.copy(0.6f))
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 6.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    GridCategory.entries.forEach { gc ->
+                        val sel = gc == category
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) RubidiumAccent.copy(0.16f) else Color.Transparent)
+                                .border(
+                                    1.dp,
+                                    if (sel) RubidiumAccent.copy(0.55f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable { category = gc }
+                                .padding(horizontal = 10.dp, vertical = 7.dp)
+                        ) {
+                            Text(
+                                gc.display.uppercase(),
+                                fontSize = 10.sp,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                                color = if (sel) RubidiumAccentLight else RubidiumOnSurfaceDim,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            category.display.uppercase(),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            color = RubidiumOnBackground,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            "${mods.size} modules",
+                            fontSize = 9.sp,
+                            color = RubidiumOnSurfaceDim,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    if (mods.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("Empty", fontSize = 10.sp, color = RubidiumOnSurfaceDim)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(mods) { mod ->
+                                CsgoModuleRow(module = mod, onShortcutChanged = onShortcutChanged)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Module settings popup — same service-safe fake-Dialog the grid uses.
+        val popupModule = GridSettingsPopup.current
+        if (popupModule != null) {
+            ModuleSettingsPopup(
+                module            = popupModule,
+                onShortcutChanged = onShortcutChanged,
+                onDismiss         = { GridSettingsPopup.close() }
+            )
+        }
+    }
+}
+
+@Composable
+private fun CsgoModuleRow(module: BaseModule, onShortcutChanged: () -> Unit) {
+    var enabled by remember { mutableStateOf(module.isEnabled) }
+    val popupModule  = GridSettingsPopup.current
+    val isPopupOpen  = popupModule === module
+    LaunchedEffect(module) { module.enabledFlow.collect { enabled = it } }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(
+                when {
+                    isPopupOpen -> RubidiumAccent.copy(0.24f)
+                    enabled     -> RubidiumAccent.copy(0.16f)
+                    else        -> RubidiumSurface
+                }
+            )
+            .border(
+                1.dp,
+                when {
+                    isPopupOpen -> RubidiumAccentLight
+                    enabled     -> RubidiumAccent.copy(0.6f)
+                    else        -> RubidiumOutline.copy(0.6f)
+                },
+                RoundedCornerShape(6.dp)
+            )
+            .clickable { ModuleManager.toggle(module); onShortcutChanged() }
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            module.name,
+            fontSize = 12.sp,
+            fontWeight = if (enabled) FontWeight.Bold else FontWeight.Medium,
+            color = if (enabled) RubidiumOnBackground else RubidiumOnSurfaceDim,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (module.settings.isNotEmpty()) {
+            Text(
+                "⚙",   // open the (service-safe) module settings popup
+                fontSize = 12.sp,
+                color = RubidiumOnSurfaceDim,
+                modifier = Modifier
+                    .clickable { GridSettingsPopup.toggle(module) }
+                    .padding(2.dp)
+            )
+        }
+        Text(
+            if (enabled) "ON" else "OFF",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Black,
+            fontFamily = FontFamily.Monospace,
+            color = if (enabled) RubidiumAccentLight else RubidiumOnSurfaceDim.copy(0.5f)
         )
     }
 }
