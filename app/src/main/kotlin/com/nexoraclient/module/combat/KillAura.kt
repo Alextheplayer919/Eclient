@@ -73,10 +73,9 @@ class KillAura : BaseModule(
     private var shouldRot = false
     private var strafeAngle = 0f
 
-    private var lockedYaw = 0f
+    private var spinOffset = 0f
     private var lastLockTarget: EntityTracker.TrackedEntity? = null
     private var lockLastTickMs = 0L
-    private var lockWasStrafing = false
 
     private var positionHistory = mutableListOf<Vector3f>()
     private var velocityHistory = mutableListOf<Vector3f>()
@@ -97,10 +96,9 @@ class KillAura : BaseModule(
         velocityHistory.clear()
         lastQuantumTarget = null
         quantumConfidence = 1.0f
-        lockedYaw = 0f
+        spinOffset = 0f
         lastLockTarget = null
         lockLastTickMs = 0L
-        lockWasStrafing = false
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -113,7 +111,6 @@ class KillAura : BaseModule(
         lastQuantumTarget = null
         lastLockTarget = null
         lockLastTickMs = 0L
-        lockWasStrafing = false
         super.onDisable()
     }
 
@@ -334,10 +331,12 @@ class KillAura : BaseModule(
         shouldRot = true
     }
 
-    // ── Target Lock: yaw-only lock that holds still until the player presses a
-    //    strafe input — left input spins left, right spins right at a steady
-    //    "Lock Distance" degrees-per-second (time-based, so packet rate doesn't
-    //    matter), and releasing the strafe snaps the lock back onto the target. ──
+    // ── Target Lock: yaw glued to the target plus a persistent spin offset.
+    //    No strafe input  -> the rotation stands still, still pinned on the
+    //    target at the same offset. Strafe input -> circles around the target
+    //    at "Lock Distance" deg/sec. The offset only ever moves forward and
+    //    NEVER snaps back, so once you start circling you can't back out of
+    //    the circle (only a target switch or module restart re-centers it). ──
     private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         // Where the target actually is right now (Apolon CalcPlayerAngle style yaw)
         val dx = target.x - EntityTracker.selfX
@@ -346,11 +345,10 @@ class KillAura : BaseModule(
 
         val nowMs = System.currentTimeMillis()
         if (lastLockTarget != target || lockLastTickMs <= 0L) {
-            // (Re)acquire: start the lock aimed straight at the target
-            lockedYaw       = targetYaw
-            lastLockTarget  = target
-            lockLastTickMs  = nowMs
-            lockWasStrafing = false
+            // Fresh lock: start dead-on the target
+            spinOffset     = 0f
+            lastLockTarget = target
+            lockLastTickMs = nowMs
         }
 
         var spinDir = 0f
@@ -358,20 +356,15 @@ class KillAura : BaseModule(
         else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = 1f
 
         if (spinDir != 0f) {
-            // Steady spin scaled by elapsed time between packets
+            // Steady circling scaled by elapsed time between packets
             val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
-            lockedYaw = wrapYaw(lockedYaw + spinDir * lockDistance.value * dt)
-            lockWasStrafing = true
-        } else if (lockWasStrafing) {
-            // Strafe just released -> snap the lock straight back onto the target
-            lockedYaw = targetYaw
-            lockWasStrafing = false
+            spinOffset = wrapYaw(spinOffset + spinDir * lockDistance.value * dt)
         }
 
         lockLastTickMs = nowMs
 
-        // Real pitch, locked/spun yaw — stands still until strafe input arrives.
-        rotAngle = Pair(EntityTracker.selfPitch, lockedYaw)
+        // Real pitch; yaw = target + offset -> always on the circle, never out.
+        rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw + spinOffset))
         shouldRot = true
     }
 

@@ -157,6 +157,26 @@ object InventoryUtil {
         return bare in FOOD_IDENTIFIERS
     }
 
+    /** Drinkable/throwable potion identifiers, namespace stripped. */
+    private val POTION_IDENTIFIERS = setOf(
+        "potion", "splash_potion", "lingering_potion"
+    )
+
+    /**
+     * True for any potion, resolved by identifier rather than numeric ID —
+     * same pattern as isFood(). Returns false when unresolvable.
+     */
+    fun isPotion(item: ItemData?): Boolean {
+        if (isEmpty(item)) return false
+        val identifier = resolveIdentifier(item!!) ?: return false
+        val bare = if (identifier.startsWith("minecraft:")) {
+            identifier.substring("minecraft:".length)
+        } else {
+            identifier
+        }
+        return bare in POTION_IDENTIFIERS
+    }
+
     /** True when the item's identity could not be resolved at all. */
     fun isIdentityUnknown(item: ItemData?): Boolean {
         if (isEmpty(item)) return true

@@ -20,7 +20,8 @@ import com.rubidiumclient.utils.InventoryUtil
  *   selfItemUseDurationMs how long the current use has been going
  *
  * That bit is true for ANY item use (bows, shields, buckets), so it is combined
- * with a food check on the held item. Item identity is resolved through
+ * with a food-or-potion check on the held item — eating and drinking potions
+ * (e.g. a strength potion) both pause combat. Item identity is resolved through
  * InventoryUtil.resolveIdentifier, which reads the connection's item
  * definitions — Bedrock runtime IDs are negotiated per connection, so the
  * legacy numeric IDs in InventoryUtil.FOOD_NET_IDS are not usable here.
@@ -69,7 +70,7 @@ object EatingGuard {
                 // but bail out earlier so a stuck bit cannot freeze combat.
                 if (heldFor > maxUseMs) return false
 
-                pauseOnAnyItemUse || isHoldingFood()
+                pauseOnAnyItemUse || isHoldingFood() || isHoldingPotion()
             } catch (e: Exception) {
                 // Never let a guard break the packet path.
                 DiagLog.log(TAG, "isEating threw: ${e.message}")
@@ -86,6 +87,14 @@ object EatingGuard {
             InventoryUtil.isFood(EntityTracker.getHeldItem())
         } catch (e: Exception) {
             DiagLog.log(TAG, "held-item food check threw: ${e.message}")
+            false
+        }
+
+    private fun isHoldingPotion(): Boolean =
+        try {
+            InventoryUtil.isPotion(EntityTracker.getHeldItem())
+        } catch (e: Exception) {
+            DiagLog.log(TAG, "held-item potion check threw: ${e.message}")
             false
         }
 
