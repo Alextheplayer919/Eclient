@@ -51,9 +51,12 @@ if(NOT dobby_POPULATED)
     if(NOT patch_rc EQUAL 0)
         message(FATAL_ERROR "failed to apply patches/dobby-memrange-fix.patch to Dobby (rc=${patch_rc})")
     endif()
+    # Register Dobby's CMakeLists (defines `dobby` + `dobby_static` targets).
+    # Do NOT use FetchContent_MakeAvailable after a manual Populate — the
+    # combination silently skips add_subdirectory on some CMake versions,
+    # leaving dobby_static undefined and the link/include path broken.
+    add_subdirectory("${dobby_SOURCE_DIR}" "${dobby_BINARY_DIR}" EXCLUDE_FROM_ALL)
 endif()
-
-FetchContent_MakeAvailable(dobby)
 
 add_library(eclient_attach SHARED
     src/probe.cpp
@@ -61,7 +64,10 @@ add_library(eclient_attach SHARED
 )
 set_target_properties(eclient_attach PROPERTIES OUTPUT_NAME "eclient_attach")
 
-target_include_directories(eclient_attach PRIVATE src)
+target_include_directories(eclient_attach PRIVATE
+    src
+    "${dobby_SOURCE_DIR}/include"
+)
 
 target_compile_options(eclient_attach PRIVATE
     $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:
