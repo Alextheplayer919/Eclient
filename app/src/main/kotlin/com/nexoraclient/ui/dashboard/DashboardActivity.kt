@@ -489,7 +489,7 @@ private fun ScreenHeader(
 /** Header used on the Dashboard tab: keeps the version number on the same line as the
  *  title (instead of wrapping below it). */
 @Composable
-private fun DashboardHeader(title: String, subtitle: String) {
+private fun DashboardHeader(title: String) {
     Spacer(Modifier.height(18.dp))
     Text(
         title,
@@ -500,13 +500,6 @@ private fun DashboardHeader(title: String, subtitle: String) {
         maxLines = 1,
         softWrap = false,
         overflow = TextOverflow.Visible
-    )
-    Spacer(Modifier.height(3.dp))
-    Text(
-        subtitle,
-        fontSize = 12.sp,
-        color = RubidiumOnSurfaceDim,
-        fontFamily = FontFamily.Monospace
     )
     Spacer(Modifier.height(20.dp))
 }
@@ -546,8 +539,7 @@ private fun DashboardTab(
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         DashboardHeader(
-            title    = "Eclient 2.1",
-            subtitle = "Made by Oxygen8315"
+            title = "Eclient"
         )
 
         AnimatedVisibility(
