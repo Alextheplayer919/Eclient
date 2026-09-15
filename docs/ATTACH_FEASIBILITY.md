@@ -1,3 +1,4 @@
+> **STATUS: PARKED (2026-09-15)** — all phases up to a green CI build of the probe are done; only the on-device go/no-go test never ran. Development focus moved back to the proxy-based main branch.
 # Feasibility Study: From Proxy Client → "Attached" Client
 
 Branch: `attach-experiment` — research + planning only. **No production code is touched here.**

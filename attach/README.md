@@ -1,3 +1,4 @@
+> **ARCHIVED / PARKED (2026-09-15)** — build pipeline is complete and green (artifact `eclient_attach-so`, run 35022242632), but the device-side gate test was never run (no PC available for the patch→sign→adb loop). Safe to resume if that changes; start by re-checking the signature patterns against the current MC version.
 # Eclient Attach — Phase 1 (experiment, launcher-free)
 
 **Branch-only experiment.** Nothing here is referenced by `app/`, the Gradle
