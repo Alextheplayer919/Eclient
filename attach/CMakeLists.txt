@@ -36,6 +36,23 @@ FetchContent_Declare(
 set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(DOBBY_BUILD_TEST    OFF CACHE BOOL "" FORCE)
 set(DOBBY_DEBUG         OFF CACHE BOOL "" FORCE)
+
+# Dobby's own source at this commit has small drift bugs (MemRange field →
+# start() method, RuntimeModule.load_address → .base) — patched in-tree.
+FetchContent_GetProperties(dobby)
+if(NOT dobby_POPULATED)
+    FetchContent_Populate(dobby)
+    execute_process(
+        COMMAND git apply --ignore-whitespace
+                "${CMAKE_CURRENT_SOURCE_DIR}/patches/dobby-memrange-fix.patch"
+        WORKING_DIRECTORY "${dobby_SOURCE_DIR}"
+        RESULT_VARIABLE patch_rc
+    )
+    if(NOT patch_rc EQUAL 0)
+        message(FATAL_ERROR "failed to apply patches/dobby-memrange-fix.patch to Dobby (rc=${patch_rc})")
+    endif()
+endif()
+
 FetchContent_MakeAvailable(dobby)
 
 add_library(eclient_attach SHARED
