@@ -2176,7 +2176,7 @@ private fun MenuSearchHeader(
 ) {
     OutlinedTextField(
         value = query,
-        onQueryChange = onQueryChange,
+        onValueChange = onQueryChange,
         singleLine = true,
         placeholder = {
             Text(
