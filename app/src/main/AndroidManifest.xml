@@ -55,7 +55,7 @@
             tools:targetApi="34">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Rubidium Client Relay Overlay" />
+                android:value="Eclient Relay Overlay" />
         </service>
 
         <provider

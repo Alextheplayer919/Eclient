@@ -22,6 +22,10 @@ class AntiBed : BaseModule(
     private val windowMs        = int("Protection Window (ms)", 400, 100, 2000)
     private val shortcut        = bool("Shortcut", false)
 
+    // Defensive, not aggressive: this only cancels bed-explosion effects and
+    // knockback, so it must keep running while eating.
+    override val pauseWhileEating: Boolean get() = false
+
     @Volatile private var protectedUntil = 0L
 
     override fun onEnable() {

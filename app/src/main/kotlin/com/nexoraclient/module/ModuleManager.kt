@@ -1,6 +1,7 @@
 package com.rubidiumclient.module
 
 import com.rubidiumclient.core.relay.RubidiumRelaySession
+import com.rubidiumclient.utils.DiagLog
 import com.rubidiumclient.module.combat.*
 import com.rubidiumclient.module.misc.*
 import com.rubidiumclient.module.movement.*
@@ -23,6 +24,17 @@ object ModuleManager {
 
     fun registerAll(vararg mods: BaseModule) {
         if (initialized) {
+            // Previously this returned in silence, so any module registered
+            // after first init simply vanished with no trace anywhere. The
+            // behaviour is unchanged, but it is no longer invisible: the drop
+            // is written to the diag log with the module names.
+            runCatching {
+                DiagLog.log(
+                    "ModuleManager",
+                    "registerAll ignored ${mods.size} module(s) after init: " +
+                        mods.joinToString { it.name }
+                )
+            }
             return
         }
         initialized = true
@@ -33,6 +45,11 @@ object ModuleManager {
 
     fun getAll(): List<BaseModule> = _modules
 
+    // Called by ConnectionManager on every new relay session. Intentionally a
+    // no-op today — modules pick up the session themselves via
+    // PacketEventBus.currentSession / event.session. Kept because
+    // ConnectionManager depends on it; do not delete without updating that
+    // call site.
     fun registerToSession(session: RubidiumRelaySession) {
     }
 

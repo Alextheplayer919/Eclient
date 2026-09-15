@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Rubidium Client</string>
-    <string name="keybind_service_description">Rubidium Client\'ın klavye/gamepad/ekstra fare tuşu keybind\'larını yakalaması için kullanılır.</string>
+    <string name="app_name">Eclient</string>
+    <string name="keybind_service_description">Eclient\'ın klavye/gamepad/ekstra fare tuşu keybind\'lerini yakalaması için kullanılır.</string>
 </resources>

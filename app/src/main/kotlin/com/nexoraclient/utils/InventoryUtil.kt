@@ -116,6 +116,53 @@ object InventoryUtil {
         return result
     }
 
+    /**
+     * Vanilla food identifiers, namespace stripped.
+     *
+     * Bedrock runtime IDs are negotiated per connection, so the numeric
+     * FOOD_NET_IDS set above cannot identify food — the same reason
+     * isTotemNetId() is deprecated in favour of the identifier-based isTotem().
+     * This follows that pattern.
+     *
+     * "appleenchanted" is the pre-1.16.100 alias for enchanted_golden_apple and
+     * is kept so older servers still resolve it.
+     */
+    private val FOOD_IDENTIFIERS = setOf(
+        "apple", "golden_apple", "enchanted_golden_apple", "appleenchanted",
+        "bread", "cookie", "pumpkin_pie", "cake",
+        "beef", "cooked_beef", "porkchop", "cooked_porkchop",
+        "chicken", "cooked_chicken", "rabbit", "cooked_rabbit",
+        "mutton", "cooked_mutton", "cod", "cooked_cod",
+        "salmon", "cooked_salmon", "tropical_fish", "pufferfish",
+        "potato", "baked_potato", "poisonous_potato", "carrot", "golden_carrot",
+        "beetroot", "melon_slice", "sweet_berries", "glow_berries",
+        "dried_kelp", "honey_bottle", "mushroom_stew", "beetroot_soup",
+        "rabbit_stew", "suspicious_stew", "rotten_flesh", "spider_eye",
+        "chorus_fruit", "omni_potato"
+    )
+
+    /**
+     * True for any edible item, resolved by identifier rather than numeric ID.
+     * Returns false when the identifier cannot be resolved — callers should
+     * treat that as "unknown", not "not food", if it matters.
+     */
+    fun isFood(item: ItemData?): Boolean {
+        if (isEmpty(item)) return false
+        val identifier = resolveIdentifier(item!!) ?: return false
+        val bare = if (identifier.startsWith("minecraft:")) {
+            identifier.substring("minecraft:".length)
+        } else {
+            identifier
+        }
+        return bare in FOOD_IDENTIFIERS
+    }
+
+    /** True when the item's identity could not be resolved at all. */
+    fun isIdentityUnknown(item: ItemData?): Boolean {
+        if (isEmpty(item)) return true
+        return resolveIdentifier(item!!) == null
+    }
+
     enum class ArmorSlotType(val slotIndex: Int) { HELMET(0), CHESTPLATE(1), LEGGINGS(2), BOOTS(3) }
 
     fun resolveArmorSlotType(item: ItemData?): ArmorSlotType? {

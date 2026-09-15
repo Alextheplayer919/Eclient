@@ -47,7 +47,30 @@ object PacketEventBus {
 
     fun publish(event: PacketEvent) {
         val snap = snapshot
+
+        // Read the eating state once per packet, not once per listener, so every
+        // listener sees the same answer for this packet.
+        val eating = try {
+            com.rubidiumclient.core.EatingGuard.isEating
+        } catch (_: Exception) {
+            false
+        }
+        if (eating != eatingAtLastPublish) {
+            eatingAtLastPublish = eating
+            try {
+                com.rubidiumclient.core.EatingGuard.noteTransition(eating)
+            } catch (_: Exception) {
+            }
+        }
+
         for (l in snap) {
+            // Combat holds off while the player is eating, then resumes on its
+            // own once the bite finishes. Defaults to false, so non-combat
+            // listeners — including EntityTracker, which is what keeps
+            // selfUsingItem up to date — are never paused. Pausing that one
+            // would stop the eating state from ever clearing.
+            if (eating && l.pauseWhileEating) continue
+
             try { l.onPacket(event) } catch (_: Exception) {}
             // Only break if packet is CANCELLED (rejected completely)
             // If replacementPacket is set, continue to next listener
@@ -55,6 +78,8 @@ object PacketEventBus {
             if (event.isCancelled) break
         }
     }
+
+    @Volatile private var eatingAtLastPublish: Boolean = false
 
     fun post(event: PacketEvent) = publish(event)
 
@@ -64,6 +89,14 @@ object PacketEventBus {
 
     interface PacketListener {
         val priority: Int get() = 100
+
+        /**
+         * When true, onPacket is skipped while the player is eating (see
+         * EatingGuard). Defaults to false so existing listeners are unaffected;
+         * BaseModule turns it on for the COMBAT category only.
+         */
+        val pauseWhileEating: Boolean get() = false
+
         fun onPacket(event: PacketEvent)
     }
 }

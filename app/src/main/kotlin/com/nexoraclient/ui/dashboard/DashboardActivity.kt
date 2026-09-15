@@ -546,7 +546,7 @@ private fun DashboardTab(
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         DashboardHeader(
-            title    = "Rubidium Client 2.0",
+            title    = "Eclient 2.1",
             subtitle = "Made by Oxygen8315"
         )
 

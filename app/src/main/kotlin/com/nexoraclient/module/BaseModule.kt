@@ -1,5 +1,6 @@
 package com.rubidiumclient.module
 
+import com.rubidiumclient.core.EatingGuard
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import kotlinx.coroutines.CoroutineScope
@@ -78,12 +79,29 @@ abstract class BaseModule(
     protected open fun onEnable()  { PacketEventBus.register(this) }
     protected open fun onDisable() { PacketEventBus.unregister(this) }
 
+    /**
+     * Combat modules hold off while the player is eating, because attacking or
+     * forcing a rotation cancels the eat. Everything else is untouched.
+     *
+     * Overridable per module — defensive modules that must keep running during
+     * an eat (AutoTotem, AutoArmor, AntiCrystal) should set this to false:
+     *
+     *     override val pauseWhileEating: Boolean get() = false
+     */
+    override val pauseWhileEating: Boolean
+        get() = category == ModuleCategory.COMBAT && EatingGuard.enabled
+
     override fun onPacket(event: PacketEvent) {}
 
+    /**
+     * Tick loop used by modules that act on an interval rather than per packet.
+     * Respects the same eating guard as onPacket, so both action paths behave
+     * the same way during an eat.
+     */
     protected fun launchTickLoop(intervalMs: Long, block: suspend () -> Unit): Job =
         scope.launch {
             while (currentCoroutineContext().isActive) {
-                if (isEnabled) {
+                if (isEnabled && !(pauseWhileEating && EatingGuard.isEating)) {
                     try {
                         block()
                     } catch (e: Exception) {

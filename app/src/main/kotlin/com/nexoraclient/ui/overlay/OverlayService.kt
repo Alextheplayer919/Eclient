@@ -459,14 +459,14 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(CHANNEL_ID, "Rubidium Client Overlay", NotificationManager.IMPORTANCE_MIN)
+            val ch = NotificationChannel(CHANNEL_ID, "Eclient Overlay", NotificationManager.IMPORTANCE_MIN)
             getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
         }
     }
 
     private fun buildNotif() = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.mipmap.ic_rubidium_logo)
-        .setContentTitle("Rubidium Client Overlay")
+        .setContentTitle("Eclient Overlay")
         .setContentText("HUD aktif")
         .setOngoing(true)
         .setPriority(NotificationCompat.PRIORITY_MIN)
@@ -636,7 +636,7 @@ private fun MenuFab(onClick: () -> Unit, onDrag: (Float, Float) -> Unit) {
     ) {
         androidx.compose.foundation.Image(
             painter            = painterResource(id = R.mipmap.ic_rubidium_logo),
-            contentDescription = "Rubidium",
+            contentDescription = "Eclient",
             modifier           = Modifier
                 .size(30.dp)
                 .clip(CircleShape)
@@ -775,7 +775,7 @@ private fun HileMenu(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Rubidium Client",
+                    Text("Eclient",
                         fontSize = 18.sp, fontWeight = FontWeight.ExtraBold,
                         color = RubidiumOnBackground)
                     Box(
