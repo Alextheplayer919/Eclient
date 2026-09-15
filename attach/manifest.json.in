@@ -1,0 +1,10 @@
+{
+  "type": "preload-native",
+  "name": "Eclient Attach Probe",
+  "author": "Alextheplayer919",
+  "description": "Phase-1 feasibility probe: read-only depth check for the attached-client experiment. Resolves ClientInstance and reads the local player position from game memory; logs it. No cheats, no writes.",
+  "version": "@MOD_VERSION@",
+  "entry": "lib@MOD_ID@.so",
+  "icon": "",
+  "minecraft_versions": ["1.26.*"]
+}
