@@ -1,70 +1,94 @@
-# Eclient Attach Probe — Phase 1 (experiment)
+# Eclient Attach — Phase 1 (experiment, launcher-free)
 
 **Branch-only experiment.** Nothing here is referenced by `app/`, the Gradle
 build, or the proxy code. See `docs/ATTACH_FEASIBILITY.md` for the plan.
 
-## What it is
+## Architecture — NO LeviLaunchroid anywhere
 
-A minimal **`preload-native` module for LeviLaunchroid** (open-source Android
-launcher that injects native `.so` mods into the *exported official* Minecraft
-APK at launch — no re-signing, no root). Purpose: the go/no-go gate for the
-attach-client experiment.
+```
+Your PC runs:  patch.sh  →  stock-game.apk + libeclient_attach.so
+                            └──► eclient_attached.apk  (re-signed)
+                                  │
+                                  ▼ install
+                            Game launches, our .so is inside its process
+                                  │
+                                  ▼
+                     pattern-scan + hook + read real memory
+                                  │
+                                  ▼
+                     adb logcat -s EclientAttach   →   pos=(x, y, z)
+```
 
-It does **one** thing:
+The game does the loading itself. After `patch.sh` finishes, **there is no
+second app, no launcher, nothing extra on the device** — just one modified
+game APK (signed with our own keystore, which it auto-generates).
 
-1. Pattern-scans `libminecraftpe.so` for `ClientInstance::update` and
-   `ClientInstance::getLocalPlayer` (ARM64 wildcard signatures adapted from
-   the open-source **BedrockTools** mod, Apache-2.0).
-2. Detours the update function to capture the live `ClientInstance*`.
-3. Every ~10 s reads the local player's position + rotation from the game's
-   own memory (StateVectorComponent / ActorRotationComponent offsets) and logs
-   it — tag `EclientAttachProbe` in logcat and in LeviLauncher's mod log.
+## What the probe does (deliberately boring — it's a gate, not a cheat)
 
-Nothing else. No writes, no cheats, no UI. If signatures miss, it logs the
-failure and exits clean — the game runs stock. That *is* the test.
+1. `__attribute__((constructor))` fires the moment the game dlopens the `.so`
+2. A detached pthread waits for `libminecraftpe.so` to map, then ARM64
+   byte-pattern scans (adapted from open-source **BedrockTools**, Apache-2.0)
+   for `ClientInstance::update` + `ClientInstance::getLocalPlayer`
+3. **Dobby** (MIT hook engine, statically linked) detours the update function
+   to capture the live `ClientInstance*`
+4. Every ~10 s reads position + rotation from
+   `StateVectorComponent` / `ActorRotationComponent` and logs to logcat
+5. If a signature misses: loud log line, zero writes — stock game runs on
 
-## Gate verdict criteria
+That last point is exactly the *compatibility test*: if v1.26.x of the game
+still matches these patterns, we know the attach path is viable and can move
+to phase 2. If not, we update patterns and re-test — same as every injected
+client on Windows.
 
-| Result | Meaning |
-|---|---|
-| Position lines appear while in a world | **GO** → phase 2 (bridge into Eclient UI) |
-| `Signature resolution failed` in log | version mismatch → refresh patterns, retry once |
-| Crash / freeze at load | **NO-GO** for now → stay proxy (main branch unaffected) |
+## Build the .so
 
-## Build
-
-Built by **`.github/workflows/attach_build.yml`** on pushes to the
-`attach-experiment` branch — download `eclient_attach-levipack` from the
-run artifacts. Locally:
+Built by **`.github/workflows/attach_build.yml`** on pushes to this branch —
+download `eclient_attach-so` from the run artifacts. Locally:
 
 ```bash
 cmake -S attach -B attach/build -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/<28.x>/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
   -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release
-cmake --build attach/build            # produces *.levipack
+cmake --build attach/build       # → attach/build/libeclient_attach.so
 ```
 
-## Install & test
+## Patch the game APK
 
-1. Install **LeviLaunchroid** (LiteLDev/LeviLaunchroid, needs an arm64 device,
-   Android 9+, and a Play Store copy of Minecraft Bedrock).
-2. In LeviLauncher: import your official MC APK.
-3. Import the probe: **Mods → Import** → pick the `eclient_attach-*.levipack`
-   (or drop `libeclient_attach.so` in manually).
-4. Enable it, launch the game, load into a world.
-5. Watch the proof: `adb logcat -s EclientAttachProbe:* Preloader:*` — you
-   should see `pos=(…, …, …) rot=(…, …)` every ~10 s while walking.
+```bash
+# Needs on PATH: apktool, zipalign, apksigner or jarsigner (Java).
+./attach/patcher/patch.sh /path/to/base.apk \
+    attach/build/libeclient_attach.so  eclient_attached.apk
+
+adb install -r eclient_attached.apk
+```
+
+Notes:
+- The script auto-makes `~/.eclient/patch-debug.keystore` on first run.
+- `apksigner` produce a proper v2/v3 signature; the jarsigner fallback makes
+  v1-only (older Android will still install, but prefer apksigner when present).
+- If the game is already installed with a different signature, `adb install -r`
+  fails — uninstall the stock game first (settings are independent worlds/data,
+  back up if needed), then install ours.
+
+## Gate verdict criteria
+
+| Result | Meaning |
+|---|---|
+| `pos=(…, …, …) rot=(…, …)` every ~10 s while in a world | **GO** → phase 2 |
+| `signature miss (update=0 player=0)` in logcat | version mismatch → refresh patterns, one retry, then judge |
+| Game crashes at launch | hook toolchain wrong for this device → investigate Dobby target; worst case NO-GO |
 
 ## Layout
 
 ```
 attach/
-├── CMakeLists.txt        # standalone NDK project; fetches preloader-android 0.2.2
-├── manifest.json.in      # LeviPack manifest (type: preload-native)
-├── README.md             # this file
+├── CMakeLists.txt       # NDK project; fetches & statically links Dobby
+├── README.md
+├── patcher/
+│   └── patch.sh         # one-command game APK patcher (apktool + sign)
 └── src/
-    ├── main.cpp          # PL_REGISTER_MOD entry
-    ├── EclientAttachMod.h
-    └── EclientAttachMod.cpp
+    ├── probe.cpp        # the probe itself (scan → DobbyHook → log)
+    ├── sigscan.cpp      # self-contained /proc/self/maps wildcard scanner
+    └── sigscan.h
 ```

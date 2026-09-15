@@ -39,11 +39,9 @@ jobs:
       - name: Build module
         run: cmake --build attach/build -v
 
-      - name: Upload .levipack artifact
+      - name: Upload libeclient_attach.so artifact
         uses: actions/upload-artifact@v4
         with:
-          name: eclient_attach-levipack
-          path: |
-            attach/build/*.levipack
-            attach/build/libeclient_attach.so
+          name: eclient_attach-so
+          path: attach/build/libeclient_attach.so
           if-no-files-found: error

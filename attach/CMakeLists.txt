@@ -1,21 +1,23 @@
-# Eclient Attach probe (phase 1) — native LeviLaunchroid module build.
+# Eclient Attach probe (phase 1) — SELF-CONTAINED native library.
 #
-# This is a SEPARATE CMake project from the Android app (../app): it is only
-# configured/built by .github/workflows/attach-build.yml with an NDK toolchain,
-# or on your machine with:
+# No LeviLaunchroid, no preloader SDK. The only external dependency is Dobby
+# (MIT-licensed inline-hook engine), fetched as source and statically linked
+# into the final libeclient_attach.so, which the patcher script then injects
+# into the Minecraft APK alongside a one-line System.loadLibrary call.
+#
+# Build (also done by .github/workflows/attach_build.yml):
 #   cmake -S attach -B attach/build -G Ninja \
 #     -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/<ver>/build/cmake/android.toolchain.cmake \
 #     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
 #     -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release
 #   cmake --build attach/build
 cmake_minimum_required(VERSION 3.22)
-project(eclient_attach LANGUAGES CXX)
+project(eclient_attach LANGUAGES CXX ASM)
 
 if(NOT ANDROID)
     message(FATAL_ERROR
             "eclient_attach must be built with an Android NDK toolchain. "
-            "It is a native module for the game's process, "
-            "not a host/desktop target.")
+            "It is a native library for the game's process, not a host target.")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -23,82 +25,46 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# ── LeviLaunchroid preloader SDK ─────────────────────────────────────────────
-# Same approach as the official mod template (nilasdev/libblockoutline):
-# fetch the SDK at a pinned tag; its headers give us pl::mod lifecycle,
-# pl::memory::{resolveSignature, hook}, and PL_REGISTER_MOD.
+# ── Dobby (inline hook engine) ───────────────────────────────────────────────
+# Pinned to the 'latest' release commit (2024-03-14) for reproducibility.
 include(FetchContent)
 FetchContent_Declare(
-    preloader_android
-    GIT_REPOSITORY https://github.com/LiteLDev/preloader-android.git
-    GIT_TAG 0.2.2
+    dobby
+    GIT_REPOSITORY https://github.com/jmpews/Dobby.git
+    GIT_TAG        5dfc8546954ce3b3198132ab13fddb89ee92cdd7
 )
-FetchContent_GetProperties(preloader_android)
-if(NOT preloader_android_POPULATED)
-    FetchContent_Populate(preloader_android)
-    # preloader-android 0.2.2 keeps its CMakeLists at the repo root and
-    # defines the `preloader` shared-lib target there; add it as a subproject
-    # so we link the runtime directly (recommended by the mod template).
-    add_subdirectory(
-        "${preloader_android_SOURCE_DIR}"
-        "${preloader_android_BINARY_DIR}"
-        EXCLUDE_FROM_ALL
-    )
-endif()
-set(PRELOADER_INCLUDE_DIR "${preloader_android_SOURCE_DIR}/include")
+set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_TEST    OFF CACHE BOOL "" FORCE)
+set(DOBBY_DEBUG         OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(dobby)
 
 add_library(eclient_attach SHARED
-    src/main.cpp
-    src/EclientAttachMod.cpp
+    src/probe.cpp
+    src/sigscan.cpp
 )
 set_target_properties(eclient_attach PROPERTIES OUTPUT_NAME "eclient_attach")
 
-target_include_directories(eclient_attach PRIVATE
-    src
-    "${PRELOADER_INCLUDE_DIR}"
-)
+target_include_directories(eclient_attach PRIVATE src)
 
 target_compile_options(eclient_attach PRIVATE
-    $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-fvisibility=hidden -fvisibility-inlines-hidden>
+    $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:
+        -fvisibility=hidden
+        -fvisibility-inlines-hidden
+        -fPIC
+    >
 )
 
-# 16 KB page-size support (required by newer Android devices / Play policy).
+# 16 KB page-size support (newer Android devices / Play requirement).
 target_link_options(eclient_attach PRIVATE "-Wl,-z,max-page-size=16384")
 
 find_library(log-lib log REQUIRED)
-target_link_libraries(eclient_attach PRIVATE ${log-lib})
+target_link_libraries(eclient_attach PRIVATE ${log-lib} dobby_static)
 
-if(TARGET preloader)
-    target_link_libraries(eclient_attach PRIVATE preloader)
-else()
-    # No preloader build available: leave pl:: symbols undefined for the
-    # loader to resolve from the runtime preloader at dlopen time.
-    target_link_options(eclient_attach PRIVATE "-Wl,--unresolved-symbols=ignore-all")
+# Strip symbols — the game does not need to see any of this.
+if(CMAKE_STRIP)
+    add_custom_command(TARGET eclient_attach POST_BUILD
+        COMMAND "${CMAKE_STRIP}" --strip-unneeded "$<TARGET_FILE:eclient_attach>"
+        COMMENT "Stripping $<TARGET_FILE_NAME:eclient_attach>"
+        VERBATIM
+    )
 endif()
-
-# ─────────────────────────────────────────────────────────────────────────
-# Package as a LeviLaunchroid mod package (.levipack = a zip containing
-# manifest.json + lib<mod>.so, per BedrockTools' package layout).
-# ─────────────────────────────────────────────────────────────────────────
-set(MOD_ID "eclient_attach")
-set(MOD_VERSION "0.1.0")
-
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/manifest.json"
-    @ONLY
-)
-
-set(PACKAGE_ROOT "${CMAKE_CURRENT_BINARY_DIR}/package")
-set(PACKAGE_FILE "${CMAKE_CURRENT_BINARY_DIR}/${MOD_ID}-${MOD_VERSION}-${CMAKE_ANDROID_ARCH_ABI}.levipack")
-
-add_custom_target(levipack ALL
-    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${PACKAGE_ROOT}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${PACKAGE_ROOT}"
-    COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:eclient_attach>" "${PACKAGE_ROOT}/lib${MOD_ID}.so"
-    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_BINARY_DIR}/manifest.json" "${PACKAGE_ROOT}/manifest.json"
-    COMMAND "${CMAKE_COMMAND}" -E chdir "${PACKAGE_ROOT}" "${CMAKE_COMMAND}" -E tar "cf" "${PACKAGE_FILE}" --format=zip "manifest.json" "lib${MOD_ID}.so"
-    DEPENDS eclient_attach
-    COMMENT "Packaging ${MOD_ID} for LeviLaunchroid -> ${PACKAGE_FILE}"
-    VERBATIM
-)

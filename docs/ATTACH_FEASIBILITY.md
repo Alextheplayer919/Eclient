@@ -103,20 +103,19 @@ The client is **deeply packet-centric by design**: brains = packet MITM, eyes = 
 
 ## 3. Proposal for `attach-experiment`
 
-**Phase 0 (this branch, now):** research doc + threat model. Decide the target: **LeviLaunchroid Preloader .so** written in Kotlin/Native or C++, exposing a tiny C ABI.
+**Phase 0 (this branch, now):** research doc + threat model. Decide the target. **Decided (owner directive, 2026-09-15): no LeviLaunchroid, no third-party launcher at ANY stage — go straight to a self-contained, re-signed game APK.**
 
-> ⚠️ **Philosophy note (owner directive, 2026-09-15): LeviLaunchroid is scaffolding, NOT a dependency.**
-> It exists in phases 1–2 only as the *fastest legal vehicle to inject a test .so into a stock game* and verify the pattern-scanning/offset/datapath work, because building our own injection plumbing would burn weeks before we even know whether the risky part works. The end product must be a **standalone Eclient APK** (or Eclient-issued component) — no LeviLauncher on the user's phone. That means phases 3–4 either (a) fork the minimal attach machinery (LeviLaunchroid and the preloader SDK are both Apache-2.0, so a clean-room-or-attributed embed inside Eclient itself is legal) or (b) ship a small installer-side patcher that emits a signed, enabled APK without any third-party launcher present. The decision point is explicitly inside Phase 4, after data path is proven.
+> ⚠️ **Philosophy note:** LeviLaunchroid was briefly considered as *dev-only* scaffolding for phases 1–2. Owner explicitly rejected that: even during experimentation the vehicle must be the final architecture — a patched, re-signed Minecraft APK that contains only the stock game + our `.so`. This is exactly Path B from §2.2, and is what `attach/` now builds. The infra that patches, re-signs, and installs is a single script (`attach/patcher/patch.sh`); the feasibility gate itself is identical either way.
 
-**Phase 1 — "Hello, memory":** minimal native lib that loads inside the game via LeviLaunchroid, finds `ClientInstance` by pattern scan (port of bedrockbaritone sigs to ARM64), reads local-player position, and prints it to logcat. No cheats yet. *This is the make-or-break feasibility gate.* Status: **code done** (`attach/`), CI-built `.levipack` passed.
+**Phase 1 — "Hello, memory":** minimal self-contained native lib (own `/proc/self/maps` signature scanner + statically-linked Dobby hook engine — **no LeviLaunchroid/preloader SDK**), injected into the game APK by `patch.sh` (one-line smali `System.loadLibrary`, auto-generated debug keystore). It waits for `libminecraftpe.so`, pattern-scans for ClientInstance functions, hooks `ClientInstance::update`, reads the local player's position/rotation from real memory, prints to logcat. *This is the make-or-break feasibility gate.* Status: **code done** (`attach/`), CI-built library passed; `patcher/` + automation docs live in `attach/README.md`.
 
-**Phase 2 — bridge:** pipe the in-process data to the existing Kotlin side (UNIX socket / JNI / binder) and re-point a **read-only** module (e.g., ArrayList or ESP coords) at it — existing overlay UI unchanged, proving the hybrid: game-attached backend + current UI.
+**Phase 2 — bridge:** pipe the in-process data back to the existing Kotlin side (JSON / logcat / local socket) and re-point a **read-only** module (e.g., ArrayList or ESP coords) at it — existing overlay UI unchanged, proving the hybrid: game-attached backend + current UI.
 
-**Phase 3 — write path:** hook `sendToServer`/analogous native function to recreate the packet-mutation surface (KillAura-family proof), or write rotation directly into LocalPlayer. Only then decide: full migration, permanent hybrid, or stay proxy.
+**Phase 3 — write path:** hook a network / input function natively to recreate the packet-mutation surface (KillAura-family proof), or write rotation directly into `LocalPlayer`. Only then decide: full migration, permanent hybrid, or stay proxy as a fallback.
 
-**Phase 4 — decoupling (owner-required):** remove LeviLaunchroid dependency from the end state. Options to evaluate: in-app `.so` injection into the game process spun up from a forked launcher core (Apache-2.0 → permissible), or a one-tap installer side-component that produces a standalone signed APK. Criteria: no external launcher on the user's phone, no cracked/unsigned APKs, license requirement unchanged.
+**Phase 4 — productization:** make `patch.sh`-equivalency one-tap for the user (PC-side tooling is fine; no device-side launcher ever). Also decide whether the final APK installs alongside stock Minecraft or replaces it on device.
 
-**Non-goals for now:** replacing the overlay UI, removing the relay code, any root-only solution, distributing patched game APKs, making LeviLaunchroid part of the shipped product.
+**Non-goals (restated for clarity):** replacing the overlay UI, removing the relay code, any root-only solution, ANY LeviLauncher/LeviLaunchroid dependency at any stage, distributing pre-patched APKs (only the script ships — the user patches their own legally-owned APK).
 
 **Risk register:** pattern-scan failure on the internal build (→ Phase 1 gate), per-update breakage cadence, Play Integrity/anti-cheat attention vs. the proxy's invisibility, maintenance of a second (native) toolchain (NDK + xmake + ARM64 sigs) the project doesn't currently have.
 
