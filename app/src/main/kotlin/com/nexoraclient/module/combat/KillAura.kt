@@ -77,6 +77,10 @@ class KillAura : BaseModule(
     private var lastLockTarget: EntityTracker.TrackedEntity? = null
     private var lockLastTickMs = 0L
 
+    private var randomYawOffset = 0f
+    private var randomPitchOffset = 0f
+    private var lastRandomTarget: EntityTracker.TrackedEntity? = null
+
     private var positionHistory = mutableListOf<Vector3f>()
     private var velocityHistory = mutableListOf<Vector3f>()
     private var lastQuantumTarget: EntityTracker.TrackedEntity? = null
@@ -99,6 +103,9 @@ class KillAura : BaseModule(
         spinOffset = 0f
         lastLockTarget = null
         lockLastTickMs = 0L
+        randomYawOffset = 0f
+        randomPitchOffset = 0f
+        lastRandomTarget = null
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -323,11 +330,48 @@ class KillAura : BaseModule(
         shouldRot = true
     }
 
-    // ── Random rotation: a fresh random yaw/pitch every packet ──
-    private fun applyRandomRotation() {
-        val yaw   = Random.nextFloat() * 360f - 180f
-        val pitch = Random.nextFloat() * 180f - 90f
-        rotAngle = Pair(pitch, yaw)
+    // ── Random rotation: glued to the target like Target Lock, but the
+    //    offset drifts off in random little hops every packet instead of
+    //    smoothly circling — a jittery wander around the target. The hop
+    //    sizes are clamped so it stays within a loose cone around the
+    //    target and occasionally snaps back near center, never straying
+    //    fully away. Only a target switch or module restart re-centers it. ──
+    private fun applyRandomRotation(target: EntityTracker.TrackedEntity) {
+        // Where the target actually is right now (Apolon CalcPlayerAngle style yaw)
+        val dx = target.x - EntityTracker.selfX
+        val dz = target.z - EntityTracker.selfZ
+        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+
+        if (lastRandomTarget != target) {
+            // Fresh lock: start dead-on the target
+            randomYawOffset   = 0f
+            randomPitchOffset = 0f
+            lastRandomTarget  = target
+        }
+
+        // Random walk: a small random hop each packet (mostly small, sometimes
+        // a bigger jolt), staying inside a ±40° cone yaw-wise and ±15° pitch
+        // so the rotation still tracks the target loosely. Small chance to
+        // snap back near center so the offset never accumulates away forever.
+        val bigJolt = Random.nextFloat() < 0.08f
+        val yawStep = Random.nextFloat() * (if (bigJolt) 16f else 4f)
+        randomYawOffset = (randomYawOffset + if (Random.nextBoolean()) yawStep else -yawStep)
+        val pitchStep = Random.nextFloat() * (if (bigJolt) 8f else 2f)
+        randomPitchOffset = (randomPitchOffset + if (Random.nextBoolean()) pitchStep else -pitchStep)
+
+        randomYawOffset   = randomYawOffset.coerceIn(-40f, 40f)
+        randomPitchOffset = randomPitchOffset.coerceIn(-15f, 15f)
+
+        if (Random.nextFloat() < 0.05f) {
+            // Occasional pull back toward dead-on
+            randomYawOffset   *= 0.5f
+            randomPitchOffset *= 0.5f
+        }
+
+        // Real pitch base, offset drifting like the yaw — always on the
+        // general vicinity of the target, never fully random angles.
+        val pitch = (EntityTracker.selfPitch + randomPitchOffset).coerceIn(-90f, 90f)
+        rotAngle = Pair(pitch, wrapYaw(targetYaw + randomYawOffset))
         shouldRot = true
     }
 
@@ -426,7 +470,7 @@ class KillAura : BaseModule(
 
         // ── Rotation (0=None, 1=Normal, 2=Strafe, 3=Random, 4=Target Lock) ────
         when (rotMode.value) {
-            3    -> applyRandomRotation()
+            3    -> applyRandomRotation(primary)
             4    -> applyTargetLock(primary, pkt)
             else -> calculateRotationKillAura3(primary, pkt)
         }
