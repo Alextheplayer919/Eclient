@@ -20,7 +20,7 @@ import kotlin.random.Random
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "KillAura3 rotations + Quantum + TargetLock override"
+    description = "KillAura3 rotations + Quantum + Random + Target Lock"
 ), PacketEventBus.PacketListener {
 
     // ── Attack settings ────────────────────────────────────
@@ -50,8 +50,8 @@ class KillAura : BaseModule(
     private val orbitStopDist    = float("Stop Distance", 100f,  10f,  200f)
 
     // ── Rotation ──────────────────────────────────────────
-    private val rotMode        = int("Rotation Mode", 1, 0, 2)   // 0=None, 1=Normal, 2=Strafe
-    private val targetLock     = bool("Target Lock", false)      // ⬅️ overrides everything, silent yaw-only
+    private val rotMode        = int("Rotation Mode", 1, 0, 4)   // 0=None, 1=Normal, 2=Strafe, 3=Random, 4=Target Lock
+    private val lockDistance   = float("Lock Distance", 10f, 1f, 90f) // yaw degrees per packet while a strafe input is held (Target Lock)
 
     // ── Quantum prediction ─────────────────────────────────
     private val quantum        = bool("Quantum",          false)
@@ -82,6 +82,9 @@ class KillAura : BaseModule(
     private var shouldRot = false
     private var strafeAngle = 0f
 
+    private var lockedYaw = 0f
+    private var lastLockTarget: EntityTracker.TrackedEntity? = null
+
     private var positionHistory = mutableListOf<Vector3f>()
     private var velocityHistory = mutableListOf<Vector3f>()
     private var lastQuantumTarget: EntityTracker.TrackedEntity? = null
@@ -103,6 +106,8 @@ class KillAura : BaseModule(
         velocityHistory.clear()
         lastQuantumTarget = null
         quantumConfidence = 1.0f
+        lockedYaw = 0f
+        lastLockTarget = null
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -113,6 +118,7 @@ class KillAura : BaseModule(
         positionHistory.clear()
         velocityHistory.clear()
         lastQuantumTarget = null
+        lastLockTarget = null
         super.onDisable()
     }
 
@@ -325,24 +331,45 @@ class KillAura : BaseModule(
         shouldRot = true
     }
 
-    // ── TargetLock rotation (silent yaw-only, overrides everything) ──
-    private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        // Aim at target's body center (Apolon CalcPlayerAngle style)
-        val sx = EntityTracker.selfX
-        val sy = EntityTracker.selfY + 1.62f
-        val sz = EntityTracker.selfZ
-        val dx = target.x - sx
-        val dz = target.z - sz
-
-        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
-
-        // Send target yaw with our REAL pitch (never touch pitch)
-        val realPitch = EntityTracker.selfPitch
-        pkt.rotation = Vector3f.from(realPitch, targetYaw, targetYaw)
-
-        // Fully silent — do NOT touch EntityTracker.selfYaw / selfPitch
-        rotAngle = Pair(realPitch, targetYaw)
+    // ── Random rotation: a fresh random yaw/pitch every packet ──
+    private fun applyRandomRotation() {
+        val yaw   = Random.nextFloat() * 360f - 180f
+        val pitch = Random.nextFloat() * 180f - 90f
+        rotAngle = Pair(pitch, yaw)
         shouldRot = true
+    }
+
+    // ── Target Lock: yaw-only lock that holds still until the player presses a
+    //    strafe input — left input spins the rotation left, right spins right.
+    //    "Lock Distance" = how far it spins per packet. ──
+    private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
+        // Snap onto the target whenever it changes so the lock starts aimed
+        // (Apolon CalcPlayerAngle style yaw).
+        if (lastLockTarget != target) {
+            val dx = target.x - EntityTracker.selfX
+            val dz = target.z - EntityTracker.selfZ
+            lockedYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+            lastLockTarget = target
+        }
+
+        var spinDir = 0f
+        if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) spinDir = -1f
+        else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = 1f
+
+        if (spinDir != 0f) {
+            lockedYaw = wrapYaw(lockedYaw + spinDir * lockDistance.value)
+        }
+
+        // Real pitch, locked/spun yaw — stands still until strafe input arrives.
+        rotAngle = Pair(EntityTracker.selfPitch, lockedYaw)
+        shouldRot = true
+    }
+
+    private fun wrapYaw(yaw: Float): Float {
+        var y = yaw % 360f
+        if (y > 180f) y -= 360f
+        if (y < -180f) y += 360f
+        return y
     }
 
     // ── Orbit ──────────────────────────────────────────────────
@@ -437,18 +464,18 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Rotation (TargetLock overrides everything) ────
-        if (targetLock.value) {
-            applyTargetLock(primary, pkt)
-        } else {
-            calculateRotationKillAura3(primary, pkt)
-            if (shouldRot && rotMode.value != 0) {
-                val (pitch, yaw) = rotAngle
-                pkt.rotation = Vector3f.from(pitch, yaw, yaw)
-                if (!silentRot.value) {
-                    EntityTracker.selfYaw = yaw
-                    EntityTracker.selfPitch = pitch
-                }
+        // ── Rotation (0=None, 1=Normal, 2=Strafe, 3=Random, 4=Target Lock) ────
+        when (rotMode.value) {
+            3    -> applyRandomRotation()
+            4    -> applyTargetLock(primary, pkt)
+            else -> calculateRotationKillAura3(primary, pkt)
+        }
+        if (shouldRot && rotMode.value != 0) {
+            val (pitch, yaw) = rotAngle
+            pkt.rotation = Vector3f.from(pitch, yaw, yaw)
+            if (!silentRot.value) {
+                EntityTracker.selfYaw = yaw
+                EntityTracker.selfPitch = pitch
             }
         }
 
