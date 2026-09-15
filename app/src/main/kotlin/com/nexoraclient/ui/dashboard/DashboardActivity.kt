@@ -1202,15 +1202,9 @@ private fun SettingsTab() {
                     SettingsLinkRow(
                         label = "Discord",
                         subtitle = "Join the server",
-                        url   = "https://discord.gg/KKJRzWKUTt",
+                        url   = "https://discord.gg/AxxufgTdsx",
                         context = context
                     ) { tint -> DiscordGlyph(tint = tint) }
-                    SettingsLinkRow(
-                        label = "YouTube",
-                        subtitle = "Watch videos & tutorials",
-                        url   = "https://youtube.com/@rubidiumclient?si=is-Fde6enWRQZzdS",
-                        context = context
-                    ) { tint -> YoutubeGlyph(tint = tint) }
                 }
             }
         }
@@ -1830,28 +1824,6 @@ private fun GearGlyph(modifier: Modifier = Modifier, tint: Color = Color.White) 
         path.close()
         drawPath(path = path, color = tint)
         drawCircle(color = RubidiumBackground, radius = innerR, center = center)
-    }
-}
-
-@Composable
-private fun YoutubeGlyph(modifier: Modifier = Modifier, tint: Color = Color.White) {
-    Canvas(modifier = modifier.size(18.dp)) {
-        val w = size.width
-        val h = size.height
-        drawRoundRect(
-            color = tint,
-            topLeft = Offset(0f, h * 0.15f),
-            size = Size(w, h * 0.70f),
-            cornerRadius = CornerRadius(h * 0.20f),
-            style = Stroke(width = h * 0.11f)
-        )
-        val path = Path().apply {
-            moveTo(w * 0.40f, h * 0.35f)
-            lineTo(w * 0.40f, h * 0.65f)
-            lineTo(w * 0.66f, h * 0.50f)
-            close()
-        }
-        drawPath(path = path, color = tint)
     }
 }
 
