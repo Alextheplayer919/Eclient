@@ -522,8 +522,8 @@ private fun PerformanceHudLabel(onDrag: (Float, Float) -> Unit) {
         modifier = Modifier
             .wrapContentSize()
             .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xDD111827))
-            .border(1.dp, Color(0xFF2D3F6E), RoundedCornerShape(8.dp))
+            .background(Color(0xDD1E1E2E))
+            .border(1.dp, Color(0xFF585B70), RoundedCornerShape(8.dp))
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { totalDrag = 0f },
@@ -577,8 +577,8 @@ private fun TotemCounterIcon(onDrag: (Float, Float) -> Unit) {
         modifier = Modifier
             .wrapContentSize()
             .clip(RoundedCornerShape(50.dp))
-            .background(Color(0xDD111827))
-            .border(1.dp, Color(0xFF2D3F6E), RoundedCornerShape(50.dp))
+            .background(Color(0xDD1E1E2E))
+            .border(1.dp, Color(0xFF585B70), RoundedCornerShape(50.dp))
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { totalDrag = 0f },
@@ -622,7 +622,7 @@ private fun MenuFab(onClick: () -> Unit, onDrag: (Float, Float) -> Unit) {
         modifier = Modifier
             .size(46.dp)
             .clip(CircleShape)
-            .background(Color(0xDD1C1C1E))
+            .background(Color(0xDD181825))
             .border(1.5.dp, Color.White.copy(alpha = 0.55f), CircleShape)
             .pointerInput(Unit) { detectTapGestures(onTap = { if (!isDragging) onClick() }) }
             .pointerInput(Unit) {
@@ -756,7 +756,7 @@ private fun HileMenu(
             .width(300.dp)
             .background(
                 Brush.verticalGradient(
-                    listOf(RubidiumBackground.copy(alpha = 0.72f), Color(0xFF141830).copy(alpha = 0.72f))
+                    listOf(RubidiumBackground.copy(alpha = 0.72f), Color(0xFF11111B).copy(alpha = 0.72f))
                 )
             )
             .border(1.dp, RubidiumOutlineStrong, RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp))
