@@ -105,13 +105,18 @@ The client is **deeply packet-centric by design**: brains = packet MITM, eyes = 
 
 **Phase 0 (this branch, now):** research doc + threat model. Decide the target: **LeviLaunchroid Preloader .so** written in Kotlin/Native or C++, exposing a tiny C ABI.
 
-**Phase 1 — "Hello, memory":** minimal native lib that loads inside the game via LeviLaunchroid, finds `ClientInstance` by pattern scan (port of bedrockbaritone sigs to ARM64), reads local-player position, and prints it to logcat. No cheats yet. *This is the make-or-break feasibility gate.*
+> ⚠️ **Philosophy note (owner directive, 2026-09-15): LeviLaunchroid is scaffolding, NOT a dependency.**
+> It exists in phases 1–2 only as the *fastest legal vehicle to inject a test .so into a stock game* and verify the pattern-scanning/offset/datapath work, because building our own injection plumbing would burn weeks before we even know whether the risky part works. The end product must be a **standalone Eclient APK** (or Eclient-issued component) — no LeviLauncher on the user's phone. That means phases 3–4 either (a) fork the minimal attach machinery (LeviLaunchroid and the preloader SDK are both Apache-2.0, so a clean-room-or-attributed embed inside Eclient itself is legal) or (b) ship a small installer-side patcher that emits a signed, enabled APK without any third-party launcher present. The decision point is explicitly inside Phase 4, after data path is proven.
+
+**Phase 1 — "Hello, memory":** minimal native lib that loads inside the game via LeviLaunchroid, finds `ClientInstance` by pattern scan (port of bedrockbaritone sigs to ARM64), reads local-player position, and prints it to logcat. No cheats yet. *This is the make-or-break feasibility gate.* Status: **code done** (`attach/`), CI-built `.levipack` passed.
 
 **Phase 2 — bridge:** pipe the in-process data to the existing Kotlin side (UNIX socket / JNI / binder) and re-point a **read-only** module (e.g., ArrayList or ESP coords) at it — existing overlay UI unchanged, proving the hybrid: game-attached backend + current UI.
 
 **Phase 3 — write path:** hook `sendToServer`/analogous native function to recreate the packet-mutation surface (KillAura-family proof), or write rotation directly into LocalPlayer. Only then decide: full migration, permanent hybrid, or stay proxy.
 
-**Non-goals for now:** replacing the overlay UI, removing the relay code, any root-only solution, distributing patched game APKs.
+**Phase 4 — decoupling (owner-required):** remove LeviLaunchroid dependency from the end state. Options to evaluate: in-app `.so` injection into the game process spun up from a forked launcher core (Apache-2.0 → permissible), or a one-tap installer side-component that produces a standalone signed APK. Criteria: no external launcher on the user's phone, no cracked/unsigned APKs, license requirement unchanged.
+
+**Non-goals for now:** replacing the overlay UI, removing the relay code, any root-only solution, distributing patched game APKs, making LeviLaunchroid part of the shipped product.
 
 **Risk register:** pattern-scan failure on the internal build (→ Phase 1 gate), per-update breakage cadence, Play Integrity/anti-cheat attention vs. the proxy's invisibility, maintenance of a second (native) toolchain (NDK + xmake + ARM64 sigs) the project doesn't currently have.
 
