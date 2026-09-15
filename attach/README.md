@@ -92,3 +92,14 @@ attach/
     ├── sigscan.cpp      # self-contained /proc/self/maps wildcard scanner
     └── sigscan.h
 ```
+
+## Hook engine
+
+**And64InlineHook** (github.com/Rprop/And64InlineHook) — the classic single-purpose
+ARM64 inline hooker used by the MCPE/BedrockTools community.
+- Two-file library, MIT licensed, vendored under `src/hook/`.
+- Compiled directly into `libeclient_attach.so` — **no build-time network
+  fetches, no external native .so to load** (the earlier Dobby/FetchContent
+  design is gone; Dobby's upstream build is unmaintained and drifts).
+- API is a one-liner: `A64HookFunction(target, replacement, &original)`,
+  matching how mod menus traditionally hook packet senders in `libminecraftpe.so`.

@@ -7,8 +7,9 @@
 // perspective, our code is just another native library it owns.
 //
 // Everything below is self-contained on purpose:
-//   - signature scanning  → src/sigscan.cpp (our own, ~120 lines)
-//   - function hooking    → Dobby (github.com/jmpews/Dobby, MIT, pinned)
+//   - signature scanning  → src/sigscan.cpp (our own), ~120 lines
+//   - function hooking    → And64InlineHook (github.com/Rprop/And64InlineHook,
+//     MIT, vendored in src/hook/ — CMake-built with us, no external download)
 //   - logging             → __android_log_print, tag "EclientAttach"
 // No LeviLaunchroid, no preloader runtime, no loader-side plugins.
 //
@@ -29,8 +30,8 @@
 #include <unistd.h>
 
 #include <android/log.h>
-#include <dobby.h>
 
+#include "hook/And64InlineHook.hpp"
 #include "sigscan.h"
 
 namespace {
@@ -139,12 +140,14 @@ void* clientUpdateDetour(void* self, bool flag) {
 
     g_getLocalPlayer = reinterpret_cast<GetLocalPlayerFn>(playerAddr);
     g_hookTarget     = updateAddr;
-    const int rc = DobbyHook(
+    // A64HookFunction is all-or-nothing: on a bad target it logs to logcat and
+    // leaves the code page untouched, so a miss behaves like "game untouched".
+    A64HookFunction(
         reinterpret_cast<void*>(updateAddr),
         reinterpret_cast<void*>(&clientUpdateDetour),
         reinterpret_cast<void**>(&g_originalClientUpdate));
-    if (rc != 0) {
-        logE("DobbyHook failed rc=%d — game untouched", rc);
+    if (g_originalClientUpdate == nullptr) {
+        logE("A64HookFunction left original unset — hook failed, game untouched");
         pthread_exit(nullptr);
     }
     logI("hook installed — player position will print every ~10 s while in a world");
