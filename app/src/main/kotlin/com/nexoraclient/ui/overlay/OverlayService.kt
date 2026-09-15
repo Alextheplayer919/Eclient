@@ -2165,59 +2165,52 @@ private fun ShortcutToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit)
 
 
 // ─────────────────────────────────────────────────────────────────────────
-// Global module search — rendered above every overlay menu style.
+// Compact module search field — embedded in the CS:GO header bar between
+// the title and the close button (results render in ModuleSearchPanel).
 // ─────────────────────────────────────────────────────────────────────────
 @Composable
 private fun MenuSearchHeader(
     query         : String,
-    onQueryChange : (String) -> Unit
+    onQueryChange : (String) -> Unit,
+    modifier      : Modifier = Modifier
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(RubidiumBackground.copy(alpha = 0.85f))
-            .border(1.dp, RubidiumOutline.copy(alpha = 0.6f))
-            // Consume taps so the search bar area doesn't close the menu.
-            .pointerInput(Unit) { detectTapGestures { } }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text(
-            "Search",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = RubidiumAccentLight,
-            fontFamily = FontFamily.Monospace
-        )
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            singleLine = true,
-            placeholder = { Text("Search modules…", fontSize = 11.sp, color = RubidiumOnSurfaceDim) },
-            modifier = Modifier.weight(1f).height(40.dp),
-            textStyle = androidx.compose.ui.text.TextStyle(
-                fontSize = 12.sp, color = RubidiumOnSurface, fontFamily = FontFamily.Monospace
-            ),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor   = RubidiumAccent,
-                unfocusedBorderColor = RubidiumOutline
+    OutlinedTextField(
+        value = query,
+        onQueryChange = onQueryChange,
+        singleLine = true,
+        placeholder = {
+            Text(
+                "Search modules…",
+                fontSize = 10.sp,
+                color = RubidiumOnSurfaceDim,
+                fontFamily = FontFamily.Monospace
             )
-        )
-        if (query.isNotBlank()) {
-            Box(
-                modifier = Modifier
-                    .size(28.dp)
-                    .clip(CircleShape)
-                    .background(RubidiumSurfaceVar)
-                    .border(1.dp, RubidiumOutline, CircleShape)
-                    .clickable { onQueryChange("") },
-                contentAlignment = Alignment.Center
-            ) {
-                Text("\u00D7", fontSize = 13.sp, color = RubidiumOnSurfaceDim, fontWeight = FontWeight.Bold)
+        },
+        trailingIcon = if (query.isNotBlank()) {
+            {
+                Text(
+                    "×",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = RubidiumOnSurfaceDim,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable { onQueryChange("") }
+                        .padding(4.dp)
+                )
             }
-        }
-    }
+        } else null,
+        modifier = modifier.height(38.dp),
+        textStyle = androidx.compose.ui.text.TextStyle(
+            fontSize = 11.sp, color = RubidiumOnSurface, fontFamily = FontFamily.Monospace
+        ),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor      = RubidiumAccent,
+            unfocusedBorderColor    = RubidiumOutline,
+            focusedContainerColor   = RubidiumBackground.copy(alpha = 0.6f),
+            unfocusedContainerColor = RubidiumBackground.copy(alpha = 0.6f)
+        )
+    )
 }
 
 /**
@@ -2408,33 +2401,31 @@ private fun CsgoMenu(
                 // Panel taps must not close the menu (root closes on outside taps).
                 .pointerInput(Unit) { detectTapGestures { } }
         ) {
-            // ── Header bar ──
+            // ── Header bar: title on the left, close on the right, and the
+            //    module search field embedded in the space between them. ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(RubidiumSurface)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "ECLIENT",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Black,
-                        color = RubidiumAccentLight,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Text(
-                        "click gui",
-                        fontSize = 10.sp,
-                        color = RubidiumOnSurfaceDim,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
+                Text(
+                    "ECLIENT",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Black,
+                    color = RubidiumAccentLight,
+                    fontFamily = FontFamily.Monospace
+                )
+                MenuSearchHeader(
+                    query = searchQuery,
+                    onQueryChange = { q ->
+                        searchQuery = q
+                        if (q.isNotBlank()) GridSettingsPopup.close()
+                    },
+                    modifier = Modifier.weight(1f)
+                )
                 Box(
                     modifier = Modifier
                         .size(26.dp)
@@ -2449,15 +2440,6 @@ private fun CsgoMenu(
             }
 
             HorizontalDivider(color = RubidiumOutlineStrong)
-
-            // ── In-window module search: browse categories OR just type ──
-            MenuSearchHeader(
-                query = searchQuery,
-                onQueryChange = { q ->
-                    searchQuery = q
-                    if (q.isNotBlank()) GridSettingsPopup.close()
-                }
-            )
 
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 if (searching) {
