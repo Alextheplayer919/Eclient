@@ -94,7 +94,10 @@ class AnchorAura : BaseModule(
         // 1) Process ongoing attempts
         for (attempt in activeAttempts.toList()) {
             if (attempt.activated) {
-                if (now - attempt.placedAt > 3000L) {
+                // The anchor no longer exists post-detonation — drop the
+                // attempt quickly so the place->charge->detonate loop restarts
+                // on the same spot instead of idling 3 s per cycle.
+                if (now - attempt.placedAt > 300L) {
                     activeAttempts.remove(attempt)
                 }
                 continue
@@ -300,6 +303,21 @@ class AnchorAura : BaseModule(
 
     // ── Detonate: right-click charged anchor ──
     private fun detonate(session: RubidiumRelaySession, attempt: Attempt) {
+        // ✅ STEP 0: hands check — clicking a charged anchor while holding
+        // glowstone ADDS A CHARGE instead of detonating it. If the current
+        // hand is glowstone, switch to any safe slot first.
+        val heldId = EntityTracker.getHeldItem()?.let { InventoryUtil.resolveIdentifier(it) }
+        if (heldId == GLOWSTONE) {
+            for (s in 0..8) {
+                val id = EntityTracker.getInventoryItem(s)?.let { InventoryUtil.resolveIdentifier(it) }
+                if (id != GLOWSTONE) {
+                    InventoryUtil.sendHotbarSelect(session, s)
+                    EntityTracker.selfHotbarSlot = s
+                    break
+                }
+            }
+        }
+
         // ✅ STEP 1: Save current slot
         val beforeDetonateSlot = EntityTracker.selfHotbarSlot
         

@@ -55,6 +55,12 @@ class CrystalAura : BaseModule(
     private val idPackets       = int  ("IDPackets",       3,    1,   15)
     private val blacklistMs     = int  ("BlacklistMs",     500,  0,   2000)
 
+    // Melody damage gates: don't waste crystals on negligible hits, and cap
+    // how much of your own face you're willing to take off per crystal.
+    private val minPlaceDmg     = float("Min Place Damage", 4f,   0f,  20f)
+    private val maxSelfDmg      = float("Max Self Damage",  8f,   0f,  20f)
+    private val minBreakDmg     = float("Min Break Damage", 1f,   0f,  20f)
+
     private val removeParticles = bool ("RemoveParticles", true)
     private val log             = bool ("Log",             false)
     private val verboseLog      = bool ("VerboseLog",      false)
@@ -202,11 +208,12 @@ class CrystalAura : BaseModule(
         for (c in crystals) {
             if (crystalBlacklist.containsKey(c.runtimeId)) continue
             val dmg = simulateExplosionDamage(c.x, c.y, c.z)
-            val effective = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+            val blocked = dmg.selfDamage > maxSelfDmg.value && !suicide.value
+            val effective = if (blocked || (dmg.selfDamage > dmg.mostDamage && !suicide.value)) -1f else dmg.mostDamage
             if (effective > bestDamage) { bestDamage = effective; bestId = c.runtimeId }
         }
 
-        if (bestId != null && bestDamage > 0f) {
+        if (bestId != null && bestDamage >= minBreakDmg.value) {
             attackCrystal(session, bestId)
             lastExplodeMs = now
             sendLog(session, "Patlatıldı - ${bestDamage.toInt()} hasar")
@@ -321,7 +328,9 @@ class CrystalAura : BaseModule(
             if (above != null && above !in NON_SOLID) continue
 
             val dmg = simulateExplosionDamage(bx + 0.5f, ty + 2f, bz + 0.5f)
+            if (!suicide.value && dmg.selfDamage > maxSelfDmg.value) continue
             val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+            if (eff < minPlaceDmg.value && !suicide.value) continue
             if (eff > bestDmg) {
                 bestDmg = eff
                 bestPos = Triple(bx, ty, bz)
@@ -386,8 +395,9 @@ class CrystalAura : BaseModule(
         val scored = candidates.mapNotNull { p ->
             val cx = p.first + 0.5f; val cy = p.second + 2f; val cz = p.third + 0.5f
             val dmg = simulateExplosionDamage(cx, cy, cz)
+            if (!suicide.value && dmg.selfDamage > maxSelfDmg.value) return@mapNotNull null
             val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
-            if (eff > 0f || suicide.value) Pair(p, eff) else null
+            if (eff >= minPlaceDmg.value || suicide.value) Pair(p, eff) else null
         }
 
         return scored.maxByOrNull { it.second }?.first
