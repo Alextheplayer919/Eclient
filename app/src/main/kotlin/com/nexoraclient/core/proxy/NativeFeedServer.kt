@@ -88,10 +88,14 @@ object NativeFeedServer {
     }
 
     /**
-     * EA1 x y z rotA rotB vx vy vz tick
-     *  0  1 2 3 4    5    6  7  8  9
+     * EA1 x y z rotA rotB vx vy vz tick  → self-state frame
+     * EA0 <freeform text>                → native-side debug log passthrough
      */
     private fun parse(line: String) {
+        if (line.startsWith("EA0 ")) {
+            DiagLog.log(TAG, line.substring(4))
+            return
+        }
         val p = line.split(' ')
         if (p.size != 10 || p[0] != "EA1") return
         val x    = p[1].toFloatOrNull() ?: return

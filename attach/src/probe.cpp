@@ -27,12 +27,14 @@
 // If any scan fails: log it loudly and do nothing — game runs stock.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -72,6 +74,15 @@ std::atomic<uint64_t> g_updateCount{0};
 // Field offsets into Actor (bedrocktools::sdk::offsets, 26.x reference).
 constexpr std::size_t OFF_STATE_VECTOR_COMPONENT = 0x208; // ptr → { Vec3 pos ; ... }
 constexpr std::size_t OFF_ROTATION_COMPONENT     = 0x218; // ptr → { Vec2 rot ; ... }
+
+// Runtime-resolved offsets (fallback when the getLocalPlayer code signature
+// misses — e.g. builds whose binary predates the sig, like 26.30 vs 26.40).
+// Discovered live by scanning ClientInstance's own fields for a pointer whose
+// target *shaped like* a player (see tryResolveRuntime). Signatures never
+// involved — version-agnostic by construction.
+std::atomic<std::size_t> g_playerFieldOff{0}; // ClientInstance + off → Player*
+std::atomic<std::size_t> g_svcOff{0};         // Player + off → StateVectorComponent*
+std::atomic<std::size_t> g_rotOff{0};         // Player + off → rotation component*
 
 void logI(const char* fmt, ...) {
     __builtin_va_list ap;
@@ -143,17 +154,127 @@ void feedSelfState(float x, float y, float z,
     }
 }
 
+// One-line debug relay: anything we can't reach logcat from the user with
+// goes to the Eclient app's DiagLog instead (NativeFeedServer parses EA0).
+void feedDebug(const char* fmt, ...) {
+    char buf[256];
+    __builtin_va_list ap;
+    __builtin_va_start(ap, fmt);
+    const int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    __builtin_va_end(ap);
+    if (n <= 0) return;
+    if (g_feedFd < 0) { feedEnsure(); if (g_feedFd < 0) return; }
+    char line[280];
+    const int m = snprintf(line, sizeof line, "EA0 %.*s\n", n, buf);
+    if (m <= 0) return;
+    if (send(g_feedFd, line, static_cast<size_t>(m), MSG_NOSIGNAL) <= 0) {
+        close(g_feedFd); g_feedFd = -1;
+    }
+}
+
+// ── /proc/self/maps-backed read guards ─────────────────────────────────────
+struct Mapping { uintptr_t lo, hi; };
+std::vector<Mapping> g_maps;
+
+void refreshMaps() {
+    g_maps.clear();
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (f == nullptr) return;
+    char line[512];
+    while (fgets(line, sizeof line, f) != nullptr) {
+        unsigned long long lo = 0, hi = 0;
+        char perms[8] = {};
+        if (sscanf(line, "%llx-%llx %7s", &lo, &hi, perms) == 3 && perms[0] == 'r')
+            g_maps.push_back({static_cast<uintptr_t>(lo), static_cast<uintptr_t>(hi)});
+    }
+    fclose(f);
+}
+
+bool rangeReadable(uintptr_t p, std::size_t len) {
+    if (p < 0x10000 || (p & 7) != 0) return false;
+    for (const auto& m : g_maps)
+        if (p >= m.lo && p + len <= m.hi) return true;
+    return false;
+}
+
+bool plausiblePos(const void* svc) {
+    float v[3];
+    std::memcpy(v, svc, sizeof v);
+    for (float f : v) if (!std::isfinite(f)) return false;
+    if (v[0] == 0.f && v[1] == 0.f && v[2] == 0.f) return false;
+    if (std::fabs(v[0]) > 3.0e7f || std::fabs(v[2]) > 3.0e7f) return false; // world border
+    if (v[1] < -512.f || v[1] > 8192.f) return false;                       // bedrock..sky
+    return true;
+}
+
+bool plausibleRot(const void* rc) {
+    float v[2];
+    std::memcpy(v, rc, sizeof v);
+    for (float f : v) if (!std::isfinite(f)) return false;
+    if (std::fabs(v[0]) > 400.f || std::fabs(v[1]) > 1000.f) return false;
+    return true;
+}
+
+// Finds LocalPlayer by recognizing a client's own player object shape.
+// Runs ONLY while unresolved, throttled by the caller, and becomes a no-op
+// the moment a hit latches. Safe: every deref is guarded by maps ranges.
+bool tryResolveRuntime(void* ci) {
+    refreshMaps();
+    const char* base = static_cast<const char*>(ci);
+    for (std::size_t q = 0x40; q < 0x900; q += 8) {
+        const uintptr_t cand = *reinterpret_cast<const uintptr_t*>(base + q);
+        if (!rangeReadable(cand, 0x348)) continue;
+        for (std::size_t sv = 0x1E0; sv <= 0x2A0; sv += 8) {
+            const uintptr_t svc = *reinterpret_cast<const uintptr_t*>(cand + sv);
+            if (!rangeReadable(svc, 0x20) || !plausiblePos(reinterpret_cast<void*>(svc))) continue;
+            for (std::size_t r = 0x1E0; r <= 0x340; r += 8) {
+                if (r == sv) continue;
+                const uintptr_t rot = *reinterpret_cast<const uintptr_t*>(cand + r);
+                if (!rangeReadable(rot, 0x10) || !plausibleRot(reinterpret_cast<void*>(rot))) continue;
+                g_playerFieldOff.store(q, std::memory_order_release);
+                g_svcOff.store(sv, std::memory_order_release);
+                g_rotOff.store(r, std::memory_order_release);
+                float px = 0, py = 0, pz = 0;
+                std::memcpy(&px, reinterpret_cast<void*>(svc), 4);
+                std::memcpy(&py, reinterpret_cast<const char*>(svc) + 4, 4);
+                std::memcpy(&pz, reinterpret_cast<const char*>(svc) + 8, 4);
+                logI("runtime resolver HIT: player=ci+0x%zx svc=+0x%zx rot=+0x%zx", q, sv, r);
+                feedDebug("resolver HIT ci+0x%zx svc+0x%zx rot+0x%zx pos=(%.1f, %.1f, %.1f)",
+                          q, sv, r, px, py, pz);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void* clientUpdateDetour(void* self, bool flag) {
     g_clientInstance.store(self, std::memory_order_release);
     const uint64_t tick = g_updateCount.fetch_add(1, std::memory_order_relaxed) + 1;
 
     // Hybrid feed: cheap component reads every frame; the feed itself
     // throttles to ~33 Hz and stays silent while the relay isn't up.
+    // Player source: the getLocalPlayer function when its sig hit, else the
+    // runtime-resolved ClientInstance field (armed on the fly).
+    void* player = nullptr;
     if (g_getLocalPlayer != nullptr) {
-        if (void* player = g_getLocalPlayer(self)) {
+        player = g_getLocalPlayer(self);
+    } else {
+        if (g_playerFieldOff.load(std::memory_order_acquire) == 0 && tick % 30 == 0)
+            tryResolveRuntime(self);
+        const std::size_t pfo = g_playerFieldOff.load(std::memory_order_acquire);
+        if (pfo != 0)
+            player = *reinterpret_cast<void**>(static_cast<char*>(self) + pfo);
+    }
+    const std::size_t svcOff = g_svcOff.load(std::memory_order_acquire);
+    const std::size_t rotOff = g_rotOff.load(std::memory_order_acquire);
+    const std::size_t useSvc = svcOff != 0 ? svcOff : OFF_STATE_VECTOR_COMPONENT;
+    const std::size_t useRot = rotOff != 0 ? rotOff : OFF_ROTATION_COMPONENT;
+    if (player != nullptr) {
+        {
             auto* bytes    = static_cast<char*>(player);
-            void* stateVec = *reinterpret_cast<void**>(bytes + OFF_STATE_VECTOR_COMPONENT);
-            void* rotComp  = *reinterpret_cast<void**>(bytes + OFF_ROTATION_COMPONENT);
+            void* stateVec = *reinterpret_cast<void**>(bytes + useSvc);
+            void* rotComp  = *reinterpret_cast<void**>(bytes + useRot);
             if (stateVec != nullptr && rotComp != nullptr) {
                 struct { float x, y, z; } pos{};
                 float vel[3]; // stateVector layout: { Vec3 pos ; Vec3 posPrev ; Vec3 velocity }
@@ -171,28 +292,26 @@ void* clientUpdateDetour(void* self, bool flag) {
 
     // ~60 fps → frame 1 immediately, then every 600th frame ≈ once / 10 s.
     if (tick == 1 || tick % 600 == 0) {
-        if (g_getLocalPlayer != nullptr) {
-            void* player = g_getLocalPlayer(self);
-            if (player != nullptr) {
-                auto* bytes    = static_cast<char*>(player);
-                void* stateVec = *reinterpret_cast<void**>(bytes + OFF_STATE_VECTOR_COMPONENT);
-                void* rotComp  = *reinterpret_cast<void**>(bytes + OFF_ROTATION_COMPONENT);
-                if (stateVec != nullptr && rotComp != nullptr) {
-                    struct { float x, y, z; } pos{};
-                    struct { float a, b; }    rot{};
-                    std::memcpy(&pos, stateVec, sizeof(pos));
-                    std::memcpy(&rot, rotComp,  sizeof(rot));
-                    logI("pos=(%.2f, %.2f, %.2f) rot=(%.2f, %.2f) tick=%llu",
-                         pos.x, pos.y, pos.z, rot.a, rot.b,
-                         static_cast<unsigned long long>(tick));
-                } else {
-                    logI("player present, component ptrs null (loading?) tick=%llu",
-                         static_cast<unsigned long long>(tick));
-                }
+        if (player != nullptr) {
+            auto* bytes    = static_cast<char*>(player);
+            void* stateVec = *reinterpret_cast<void**>(bytes + useSvc);
+            void* rotComp  = *reinterpret_cast<void**>(bytes + useRot);
+            if (stateVec != nullptr && rotComp != nullptr) {
+                struct { float x, y, z; } pos{};
+                struct { float a, b; }    rot{};
+                std::memcpy(&pos, stateVec, sizeof(pos));
+                std::memcpy(&rot, rotComp,  sizeof(rot));
+                logI("pos=(%.2f, %.2f, %.2f) rot=(%.2f, %.2f) tick=%llu",
+                     pos.x, pos.y, pos.z, rot.a, rot.b,
+                     static_cast<unsigned long long>(tick));
             } else {
-                logI("no local player yet (menu?) tick=%llu",
+                logI("player present, component ptrs null (loading?) tick=%llu",
                      static_cast<unsigned long long>(tick));
             }
+        } else {
+            logI("no local player yet (menu? resolver=%s) tick=%llu",
+                 g_playerFieldOff.load(std::memory_order_acquire) != 0 ? "latched" : "scanning",
+                 static_cast<unsigned long long>(tick));
         }
     }
 
@@ -219,14 +338,19 @@ void* clientUpdateDetour(void* self, bool flag) {
     logI("ClientInstance::update        @ 0x%llx", static_cast<unsigned long long>(updateAddr));
     logI("ClientInstance::getLocalPlayer @ 0x%llx", static_cast<unsigned long long>(playerAddr));
 
-    if (updateAddr == 0 || playerAddr == 0) {
-        logE("signature miss (update=%llx player=%llx) — version mismatch likely; game untouched",
-             static_cast<unsigned long long>(updateAddr),
-             static_cast<unsigned long long>(playerAddr));
+    // Hard requirement: ClientInstance::update (frame hook — the eyes open
+    // from there). getLocalPlayer is a nice-to-have now: if its code sig
+    // misses (older builds like 26.30), the detour discovers the player
+    // pointer live instead.
+    if (updateAddr == 0) {
+        logE("signature miss on ClientInstance::update — game untouched");
         pthread_exit(nullptr);
     }
+    if (playerAddr == 0) {
+        logE("getLocalPlayer sig MISS — runtime resolver armed (version drift tolerated)");
+    }
 
-    g_getLocalPlayer = reinterpret_cast<GetLocalPlayerFn>(playerAddr);
+    g_getLocalPlayer = reinterpret_cast<GetLocalPlayerFn>(playerAddr); // may be nullptr
     g_hookTarget     = updateAddr;
     // A64HookFunction is all-or-nothing: on a bad target it logs to logcat and
     // leaves the code page untouched, so a miss behaves like "game untouched".
