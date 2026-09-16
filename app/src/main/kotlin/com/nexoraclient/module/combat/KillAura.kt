@@ -6,6 +6,7 @@ import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
 import com.rubidiumclient.module.social.isFriendEntity
+import com.rubidiumclient.utils.InventoryUtil
 import com.rubidiumclient.utils.MathUtil
 import com.rubidiumclient.utils.PacketUtil
 import com.rubidiumclient.utils.RotationUtil
@@ -16,14 +17,32 @@ import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
 import kotlin.math.*
 import kotlin.random.Random
 
+// Named modes (Melody V2 port): every selection setting shows a real name in
+// the menu instead of a number that needs a code comment to decode.
+private enum class AttackMode { CPS, INTERVAL }
+private enum class TargetMode { SINGLE, SWITCH, MULTI }
+private enum class RotationMode { NONE, AIM, RANDOM, TARGET_LOCK }
+private enum class QuantumAlgo { DYNAMIC, VELOCITY, PATTERN, NEURAL }
+
+/**
+ * Melody "Switch" mode: whether KillAura re-equips the best hotbar weapon for
+ * the attack wave.
+ *  NONE   — never touch the hotbar.
+ *  FULL   — switch to the best weapon and STAY there until the next wave.
+ *  SILENT — switch, attack, switch back in the same wave; the dance only
+ *           exists as a MobEquipmentPacket sandwich on the wire, the HUD
+ *           selection never visibly moves.
+ */
+private enum class WeaponSwitchMode { NONE, FULL, SILENT }
+
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "KillAura3 rotations + Quantum + Random + Target Lock"
+    description = "Melody-style KillAura: Aim/Random/Target-Lock rotations, Quantum prediction, silent weapon switch"
 ), PacketEventBus.PacketListener {
 
     // ── Attack settings ────────────────────────────────────
-    private val attackMode     = int("Attack Mode", 0, 0, 1)
+    private val attackMode     = enum("Attack Mode", AttackMode.CPS)
     private val cps            = int("CPS",          25, 1, 50)
     private val intervalTicks  = int("Interval",      1, 0, 20)
     private val boost          = int("Packets",      2, 1, 10)
@@ -38,16 +57,22 @@ class KillAura : BaseModule(
     private val wallRange     = float("Wall Range",  3f,   0f,  10f)
 
     // ── Target selection ───────────────────────────────────
-    private val targetMode    = int("Target Mode", 2,    0,   2)
+    private val targetMode    = enum("Target Mode", TargetMode.MULTI)
     private val switchDelay   = int("Switch Delay",100,  20,  1000)
 
     // ── Rotation ──────────────────────────────────────────
-    private val rotMode        = int("Rotation Mode", 1, 0, 4)   // 0=None, 1=Normal, 2=Strafe, 3=Random, 4=Target Lock
+    // Strafe mode was removed (sine-wobble yaw — strictly worse than the
+    // three remaining generators; see docs/MELODY_MODULES.md port notes).
+    private val rotMode        = enum("Rotation Mode", RotationMode.AIM)
     private val lockDistance   = float("Lock Distance", 180f, 10f, 720f) // Target Lock spin speed, degrees per second, while a strafe input is held
+
+    // ── Weapon switch (Melody Switch) ──────────────────────
+    private val weaponSwitch   = enum("Weapon Switch", WeaponSwitchMode.NONE)
+    private val hurtTimeCheck  = bool("Hurttime Check", true)
 
     // ── Quantum prediction ─────────────────────────────────
     private val quantum        = bool("Quantum",          false)
-    private val quantumAlgo    = int ("Q-Algorithm",      0,   0,   3)
+    private val quantumAlgo    = enum("Q-Algorithm", QuantumAlgo.DYNAMIC)
     private val quantumStrength= float("Q-Strength",      1.5f, 0f,  5f)
     private val quantumHistory = int ("Q-History",        10,   3,   30)
 
@@ -71,7 +96,6 @@ class KillAura : BaseModule(
 
     private var rotAngle = Pair(0f, 0f)
     private var shouldRot = false
-    private var strafeAngle = 0f
 
     private var spinOffset = 0f
     private var lastLockTarget: EntityTracker.TrackedEntity? = null
@@ -160,6 +184,35 @@ class KillAura : BaseModule(
 
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
 
+    // ── Best weapon scoring (Melody getBestWeaponSlot port) ──
+    // Melody scores slotDamage = attackDamage + 1.25 * sharpnessLevel. The
+    // relay mirror does not carry enchant NBT for hotbar items reliably, so
+    // the port scores by identifier -> base attack damage only; structure is
+    // identical (highest score wins, -1 = nothing worth switching to).
+    private val WEAPON_DAMAGE: Map<String, Float> = mapOf(
+        "netherite_sword" to 8f, "diamond_sword" to 7f,  "iron_sword" to 6f,
+        "stone_sword"     to 5f, "wooden_sword"  to 4f,  "golden_sword" to 4f,
+        "netherite_axe"   to 10f, "diamond_axe"  to 9f,   "iron_axe" to 9f,
+        "stone_axe"       to 9f,  "wooden_axe"   to 7f,   "golden_axe" to 7f,
+        "mace"            to 6f,  "trident"      to 9f,
+        "netherite_pickaxe" to 6f, "diamond_pickaxe" to 5f, "iron_pickaxe" to 4f,
+        "stone_pickaxe"   to 3f,  "wooden_pickaxe"  to 2f, "golden_pickaxe" to 2f
+    )
+
+    private fun bestWeaponSlot(): Int {
+        var best = -1
+        var bestDmg = 0f
+        for (slot in 0..8) {
+            val item = EntityTracker.getInventoryItem(slot) ?: continue
+            if (item.count <= 0) continue
+            val id = InventoryUtil.resolveIdentifier(item)
+                ?.removePrefix("minecraft:") ?: continue
+            val dmg = WEAPON_DAMAGE[id] ?: continue
+            if (dmg > bestDmg) { bestDmg = dmg; best = slot }
+        }
+        return best
+    }
+
     // ── Quantum prediction ──────────────────────────────────
     private fun predictWithQuantum(target: EntityTracker.TrackedEntity, currentPos: Vector3f): Vector3f {
         if (!quantum.value || lastQuantumTarget != target) {
@@ -190,11 +243,10 @@ class KillAura : BaseModule(
         }
 
         return when (quantumAlgo.value) {
-            0 -> predictDynamic(currentPos)
-            1 -> predictAdvancedVelocity(currentPos)
-            2 -> predictPatternBased(currentPos)
-            3 -> predictNeural(currentPos)
-            else -> currentPos
+            QuantumAlgo.DYNAMIC  -> predictDynamic(currentPos)
+            QuantumAlgo.VELOCITY -> predictAdvancedVelocity(currentPos)
+            QuantumAlgo.PATTERN  -> predictPatternBased(currentPos)
+            QuantumAlgo.NEURAL   -> predictNeural(currentPos)
         }
     }
 
@@ -303,7 +355,7 @@ class KillAura : BaseModule(
         return currentPos.add(offset)
     }
 
-    // ── KillAura3 rotation (normal mode) ──────────────────
+    // ── AIM rotation (Quantum-assisted point aiming) ───────
     private fun calculateRotationKillAura3(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         var aimPos = Vector3f.from(target.x, target.y, target.z)
         aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
@@ -317,16 +369,7 @@ class KillAura : BaseModule(
         }
 
         val rot = RotationUtil.toPoint(aimPos.x, aimPos.y, aimPos.z)
-        var yaw = rot.yaw
-        val pitch = rot.pitch
-
-        if (rotMode.value == 2) {
-            strafeAngle = (strafeAngle + 5f) % 360f
-            val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
-            yaw += sin(rad) * 5f
-        }
-
-        rotAngle = Pair(pitch, yaw)
+        rotAngle = Pair(rot.pitch, rot.yaw)
         shouldRot = true
     }
 
@@ -439,7 +482,7 @@ class KillAura : BaseModule(
         val nowMs = System.currentTimeMillis()
 
         val target = when (targetMode.value) {
-            0 -> {
+            TargetMode.SINGLE -> {
                 if (currentTarget == null || !cachedTargets.contains(currentTarget)) {
                     currentTarget = cachedTargets.firstOrNull()
                     positionHistory.clear()
@@ -448,7 +491,7 @@ class KillAura : BaseModule(
                 }
                 currentTarget
             }
-            1 -> {
+            TargetMode.SWITCH -> {
                 if (nowMs - lastSwitchMs >= switchDelay.value) {
                     switchIndex = (switchIndex + 1) % cachedTargets.size
                     currentTarget = cachedTargets[switchIndex]
@@ -459,7 +502,7 @@ class KillAura : BaseModule(
                 }
                 currentTarget
             }
-            else -> null
+            TargetMode.MULTI -> null
         }
 
         val primary = target ?: cachedTargets.firstOrNull()
@@ -468,13 +511,14 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Rotation (0=None, 1=Normal, 2=Strafe, 3=Random, 4=Target Lock) ────
+        // ── Rotation ──────────────────────────────────────
         when (rotMode.value) {
-            3    -> applyRandomRotation(primary)
-            4    -> applyTargetLock(primary, pkt)
-            else -> calculateRotationKillAura3(primary, pkt)
+            RotationMode.RANDOM      -> applyRandomRotation(primary)
+            RotationMode.TARGET_LOCK -> applyTargetLock(primary, pkt)
+            RotationMode.NONE,
+            RotationMode.AIM         -> calculateRotationKillAura3(primary, pkt)
         }
-        if (shouldRot && rotMode.value != 0) {
+        if (shouldRot && rotMode.value != RotationMode.NONE) {
             val (pitch, yaw) = rotAngle
             pkt.rotation = Vector3f.from(pitch, yaw, yaw)
             if (!silentRot.value) {
@@ -485,8 +529,8 @@ class KillAura : BaseModule(
 
         // ── Attack timing ──────────────────────────────────
         val attackDelayNs = when (attackMode.value) {
-            0 -> 1_000_000_000L / cps.value
-            else -> intervalTicks.value * 50_000_000L
+            AttackMode.CPS      -> 1_000_000_000L / cps.value
+            AttackMode.INTERVAL -> intervalTicks.value * 50_000_000L
         }
         if (nowNs - lastAttackNs < attackDelayNs) {
             event.cancelAndReplace(pkt)
@@ -494,8 +538,8 @@ class KillAura : BaseModule(
         }
 
         val targetsToHit = when (targetMode.value) {
-            0, 1 -> listOfNotNull(primary)
-            else -> cachedTargets
+            TargetMode.SINGLE, TargetMode.SWITCH -> listOfNotNull(primary)
+            TargetMode.MULTI -> cachedTargets
         }
 
         val sx = EntityTracker.selfX
@@ -510,26 +554,49 @@ class KillAura : BaseModule(
             return
         }
 
-        val slot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
+        // ── Hurttime check (Melody): skip targets still inside their
+        //    hurt-invulnerability window (~0.5 s) — the server discards hits
+        //    there anyway, swinging only wastes CPS budget and looks blatant. ──
+        val swingTargets = if (hurtTimeCheck.value) {
+            inRange.filterNot { EntityTracker.wasRecentlyHurt(it.runtimeId, 500L) }
+        } else inRange
+        if (swingTargets.isEmpty()) {
+            event.cancelAndReplace(pkt)
+            return
+        }
+
+        // ── Weapon switch (Melody): equip the best hotbar weapon for the
+        //    wave. SILENT wraps the whole wave in a MobEquipmentPacket
+        //    sandwich (switch → hit → switch back) that is invisible on the
+        //    client HUD; FULL leaves the best weapon equipped. ──
+        val realSlot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
+        val bestSlot = if (weaponSwitch.value == WeaponSwitchMode.NONE) realSlot
+                       else bestWeaponSlot().takeIf { it in 0..8 } ?: realSlot
+        val switched = weaponSwitch.value != WeaponSwitchMode.NONE && bestSlot != realSlot
+        if (switched) InventoryUtil.sendHotbarSelect(session, bestSlot)
+
         val attacksPerHit = hitAttempts.value
-        val packetCount = boost.value
+        val packetCount   = boost.value
 
         repeat(attacksPerHit) {
-            inRange.forEach { targetEntity ->
+            swingTargets.forEach { targetEntity ->
                 if (Random.nextInt(100) < hitChance.value) {
+                    val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
                     if (packetAttack.value) {
                         repeat(packetCount) {
                             PacketUtil.sendSwing(session)
-                            val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
-                            PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
+                            PacketUtil.sendAttack(session, targetEntity.runtimeId, bestSlot, clickPos)
                         }
                     } else {
                         PacketUtil.sendSwing(session)
-                        val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
-                        PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
+                        PacketUtil.sendAttack(session, targetEntity.runtimeId, bestSlot, clickPos)
                     }
                 }
             }
+        }
+
+        if (switched && weaponSwitch.value == WeaponSwitchMode.SILENT) {
+            InventoryUtil.sendHotbarSelect(session, realSlot)
         }
 
         lastAttackNs = nowNs

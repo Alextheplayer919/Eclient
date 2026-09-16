@@ -61,6 +61,7 @@ object EntityTracker : PacketEventBus.PacketListener {
         var prevY        : Float   = 0f,
         var prevZ        : Float   = 0f,
         var hurtTime     : Int     = 0,
+        var lastHurtMs   : Long    = 0L,
         var deathAnim    : Boolean = false,
         var offHandItem  : ItemData? = null,
         var mainHandItem : ItemData? = null,
@@ -543,7 +544,7 @@ private fun handleAuthInput(p: PlayerAuthInputPacket, dir: PacketEvent.Direction
         try {
             val typeName = p.type?.toString() ?: return
             when {
-                typeName.contains("HURT")  -> e.hurtTime  = 10
+                typeName.contains("HURT")  -> { e.hurtTime = 10; e.lastHurtMs = System.currentTimeMillis() }
                 typeName.contains("DEATH") -> e.deathAnim = true
             }
         } catch (_: Exception) {}
@@ -661,6 +662,17 @@ private fun handleAuthInput(p: PlayerAuthInputPacket, dir: PacketEvent.Direction
     }
 
     fun getInventoryItem(slot: Int): ItemData? = selfInventory[slot]
+
+    /**
+     * True when the entity took a visible hit within the last [windowMs]
+     * milliseconds (~500 ms = the bedrock hurt-invulnerability window).
+     * KillAura's Hurttime Check uses this to skip swing targets whose hits
+     * the server would discard anyway instead of burning packets on them.
+     */
+    fun wasRecentlyHurt(runtimeId: Long, windowMs: Long): Boolean {
+        val last = entities[runtimeId]?.lastHurtMs ?: return false
+        return last > 0L && System.currentTimeMillis() - last < windowMs
+    }
 
     fun getHeldItem(): ItemData? = selfInventory[selfHotbarSlot]
 
