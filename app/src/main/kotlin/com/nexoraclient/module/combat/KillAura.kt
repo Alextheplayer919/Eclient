@@ -1,6 +1,7 @@
 package com.rubidiumclient.module.combat
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
@@ -38,7 +39,7 @@ private enum class WeaponSwitchMode { NONE, FULL, SILENT }
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "Melody-style KillAura: Aim/Random/Target-Lock rotations, Quantum prediction, silent weapon switch"
+    description = "Melody-style KillAura: Aim/Random rotations, real Target Lock strafe, Quantum prediction, silent weapon switch"
 ), PacketEventBus.PacketListener {
 
     // ── Attack settings ────────────────────────────────────
@@ -60,11 +61,12 @@ class KillAura : BaseModule(
     private val targetMode    = enum("Target Mode", TargetMode.MULTI)
     private val switchDelay   = int("Switch Delay",100,  20,  1000)
 
-    // ── Rotation ──────────────────────────────────────────
-    // Strafe mode was removed (sine-wobble yaw — strictly worse than the
-    // three remaining generators; see docs/MELODY_MODULES.md port notes).
+    // ── Rotation & Target Lock ────────────────────────────
+    // Strafe rotation mode was removed (sine-wobble yaw — strictly worse
+    // than the remaining generators; see docs/MELODY_MODULES.md port notes).
     private val rotMode        = enum("Rotation Mode", RotationMode.AIM)
-    private val lockDistance   = float("Lock Distance", 180f, 10f, 720f) // Target Lock spin speed, degrees per second, while a strafe input is held
+    private val lockDistance   = float("Lock Distance", 3f, 0.5f, 7f) // Target Lock: radius to hold from the target, in BLOCKS
+    private val lockSpeed      = float("Lock Speed", 4.3f, 0.5f, 12f) // Target Lock: circling speed, blocks per second
 
     // ── Weapon switch (Melody Switch) ──────────────────────
     private val weaponSwitch   = enum("Weapon Switch", WeaponSwitchMode.NONE)
@@ -97,7 +99,6 @@ class KillAura : BaseModule(
     private var rotAngle = Pair(0f, 0f)
     private var shouldRot = false
 
-    private var spinOffset = 0f
     private var lastLockTarget: EntityTracker.TrackedEntity? = null
     private var lockLastTickMs = 0L
 
@@ -124,7 +125,6 @@ class KillAura : BaseModule(
         velocityHistory.clear()
         lastQuantumTarget = null
         quantumConfidence = 1.0f
-        spinOffset = 0f
         lastLockTarget = null
         lockLastTickMs = 0L
         randomYawOffset = 0f
@@ -418,40 +418,57 @@ class KillAura : BaseModule(
         shouldRot = true
     }
 
-    // ── Target Lock: yaw glued to the target plus a persistent spin offset.
-    //    No strafe input  -> the rotation stands still, still pinned on the
-    //    target at the same offset. Strafe input -> circles around the target
-    //    at "Lock Distance" deg/sec. The offset only ever moves forward and
-    //    NEVER snaps back, so once you start circling you can't back out of
-    //    the circle (only a target switch or module restart re-centers it). ──
-    private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        // Where the target actually is right now (Apolon CalcPlayerAngle style yaw)
-        val dx = target.x - EntityTracker.selfX
-        val dz = target.z - EntityTracker.selfZ
-        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
-
+    // ── Target Lock: REAL movement circling, not a yaw gimmick. Holds
+    //    "Lock Distance" (blocks) away from the target; while LEFT or RIGHT
+    //    strafe is held you walk around the target at "Lock Speed" in that
+    //    direction; with no strafe input you simply stand, rotation glued.
+    //    Server-side this is ordinary movement (the position inside your own
+    //    PlayerAuthInputPacket is rewritten); the same step is mirrored back
+    //    to the client via a forced MovePlayerPacket so the game actually
+    //    renders the circle instead of rubber-banding you back to your own
+    //    local physics. No world data on the wire -> the circle is naive
+    //    geometry and does not path around walls. ──
+    private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket, session: RubidiumRelaySession) {
         val nowMs = System.currentTimeMillis()
         if (lastLockTarget != target || lockLastTickMs <= 0L) {
-            // Fresh lock: start dead-on the target
-            spinOffset     = 0f
             lastLockTarget = target
             lockLastTickMs = nowMs
         }
 
         var spinDir = 0f
-        if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) spinDir = -1f
-        else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = 1f
+        if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) spinDir = 1f
+        else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = -1f
 
         if (spinDir != 0f) {
-            // Steady circling scaled by elapsed time between packets
+            val radius = lockDistance.value.coerceAtLeast(0.5f)
             val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
-            spinOffset = wrapYaw(spinOffset + spinDir * lockDistance.value * dt)
+            val step = (lockSpeed.value / radius) * dt
+
+            val angle = atan2(EntityTracker.selfZ - target.z, EntityTracker.selfX - target.x)
+            val nextAngle = angle + spinDir * step
+            val nx = target.x + radius * cos(nextAngle)
+            val nz = target.z + radius * sin(nextAngle)
+            val ny = pkt.position.y
+
+            pkt.position = Vector3f.from(nx, ny, nz)
+            EntityTracker.selfX = nx
+            EntityTracker.selfY = ny
+            EntityTracker.selfZ = nz
+            PacketUtil.sendMove(
+                session, nx, ny, nz,
+                EntityTracker.selfYaw, EntityTracker.selfPitch,
+                onGround = true, teleport = true, mirrorToClient = true
+            )
         }
 
         lockLastTickMs = nowMs
 
-        // Real pitch; yaw = target + offset -> always on the circle, never out.
-        rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw + spinOffset))
+        // Rotation glued to the target from wherever we stand now (Apolon
+        // CalcPlayerAngle style yaw), real pitch — same contract as before.
+        val dx = target.x - EntityTracker.selfX
+        val dz = target.z - EntityTracker.selfZ
+        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+        rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw))
         shouldRot = true
     }
 
@@ -514,7 +531,7 @@ class KillAura : BaseModule(
         // ── Rotation ──────────────────────────────────────
         when (rotMode.value) {
             RotationMode.RANDOM      -> applyRandomRotation(primary)
-            RotationMode.TARGET_LOCK -> applyTargetLock(primary, pkt)
+            RotationMode.TARGET_LOCK -> applyTargetLock(primary, pkt, session)
             RotationMode.NONE,
             RotationMode.AIM         -> calculateRotationKillAura3(primary, pkt)
         }
