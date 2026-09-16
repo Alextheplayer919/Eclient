@@ -221,8 +221,9 @@ class AnchorAura : BaseModule(
         originalHotbarSlot = EntityTracker.selfHotbarSlot
         val prepared = PlacementUtil.prepareItemForUse(
             session = session,
-            identifier = ANCHOR,
-            noSwitch = false  // ✅ MUST switch to place silently
+            identifier = ANCHOR
+            // silent switch (default): server sees select -> place -> select-back,
+            // HUD never moves, and revert() restores your real held item below
         ) ?: return
 
         // ✅ STEP 3: Send placement packet
@@ -275,11 +276,10 @@ class AnchorAura : BaseModule(
         }
 
         // ✅ STEP 2: Switch to glowstone
-        val originalSlot = EntityTracker.selfHotbarSlot
         val glowstone = PlacementUtil.prepareItemForUse(
             session = session,
-            identifier = GLOWSTONE,
-            noSwitch = false  // ✅ MUST switch to place silently
+            identifier = GLOWSTONE
+            // silent switch (default): sandwich + auto-restore via revert()
         ) ?: return
 
         // ✅ STEP 3: Use glowstone on the anchor to charge it
@@ -291,11 +291,7 @@ class AnchorAura : BaseModule(
             blockFace = 1
         )
         PlacementUtil.revert(session, glowstone)
-        
-        // ✅ STEP 4: Switch back to original item before charge
-        InventoryUtil.sendHotbarSelect(session, originalSlot)
-        EntityTracker.selfHotbarSlot = originalSlot
-        
+
         if (!chargeSuccess) {
             attempt.charged = false
         }

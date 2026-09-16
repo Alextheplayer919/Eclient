@@ -29,17 +29,17 @@ class AutoTrapModule : BaseModule(
             Triple(0, 1, 1), Triple(0, 1, -1),
             Triple(1, 1, 0), Triple(-1, 1, 0),
             Triple(0, 2, 0),
-            Triple(0, 1,  0)
+            Triple(0, 1, 0)
         )
     }
 
-    private val range         = float("Range",         6f, 2f, 12f)
-    private val placeDelay    = int  ("Place Delay",   100, 50, 500)
-    private val blockId       = enum ("Block", BlockChoice.OBSIDIAN)
-    private val opening       = enum ("Opening", OpeningMode.NONE)
-    private val includeCeiling= bool ("Ceiling",       true)
-    private val ignoreFriends = bool ("Ignore Friends",true)
-    private val shortcut      = bool ("Shortcut",      false)
+    private val range          = float("Range",         6f, 2f, 12f)
+    private val placeDelay     = int  ("Place Delay",   100, 50, 500)
+    private val blockId        = enum ("Block", BlockChoice.OBSIDIAN)
+    private val opening        = enum ("Opening", OpeningMode.NONE)
+    private val includeCeiling = bool ("Ceiling",       true)
+    private val ignoreFriends  = bool ("Ignore Friends",true)
+    private val shortcut       = bool ("Shortcut",      false)
 
     enum class BlockChoice(val id: String) {
         OBSIDIAN("minecraft:obsidian"),
@@ -58,12 +58,33 @@ class AutoTrapModule : BaseModule(
         NORTH, EAST, SOUTH, WEST
     }
 
+    /**
+     * One queued placement: the DEST cell where our obsidian lands plus the
+     * neighbor we click against. Storing the dest cell lets us re-validate
+     * queued work against live world state before any packet goes out and
+     * throw away work for cells the enemy (or the world) already filled —
+     * the classic "queue keeps placing at the ghost of the old target"
+     * bug.
+     */
+    private data class QueueEntry(
+        val destX: Int, val destY: Int, val destZ: Int,
+        val neighborPos: Vector3i, val supportId: String, val face: Int
+    )
+
     private var lastPlaceMs = 0L
-    private var targetQueue = ArrayDeque<Triple<Vector3i,String,Int>>()
+    private val targetQueue = ArrayDeque<QueueEntry>()
+
+    // The target CELL the current queue was built for; if the target slips
+    // to another cell the queue is stale and gets rebuilt from scratch.
+    @Volatile private var queueCellX = 0
+    @Volatile private var queueCellY = 0
+    @Volatile private var queueCellZ = 0
+    @Volatile private var queueTargetId = 0L
 
     override fun onEnable() {
         super.onEnable()
         targetQueue.clear()
+        queueTargetId = 0L
         PacketEventBus.register(this)
     }
 
@@ -85,15 +106,31 @@ class AutoTrapModule : BaseModule(
         val target = findTarget() ?: return
         val chosenId = blockId.value.id
 
+        // Rebuild if the target (or its cell) changed — stale queues are the
+        // number-one source of obsidian in the wrong place.
+        val cx = floor(target.x).toInt()
+        val cy = floor(target.y).toInt()
+        val cz = floor(target.z).toInt()
+        if (queueTargetId != target.runtimeId || cx != queueCellX || cy != queueCellY || cz != queueCellZ) {
+            targetQueue.clear()
+        }
+
+        // Purge entries whose dest cell provably isn't air anymore (world
+        // moved under us: enemy placed/dug/lagged). Unknown cells stay.
+        targetQueue.removeAll { e ->
+            val id = WorldBlockTracker.getBlockIdentifier(e.destX, e.destY, e.destZ)
+            id != null && id !in AIR_IDS
+        }
+
         if (targetQueue.isEmpty()) {
             buildQueue(target)
         }
         if (targetQueue.isEmpty()) return
 
         val prepared = PlacementUtil.prepareItemForUse(session, chosenId) ?: return
-        val (pos, supportId, face) = targetQueue.removeFirst()
+        val entry = targetQueue.removeFirst()
 
-        val placed = PlacementUtil.sendPlacementUseRaw(session, prepared, pos, supportId, face)
+        val placed = PlacementUtil.sendPlacementUseRaw(session, prepared, entry.neighborPos, entry.supportId, entry.face)
         if (placed) lastPlaceMs = now
         PlacementUtil.revert(session, prepared)
     }
@@ -124,6 +161,10 @@ class AutoTrapModule : BaseModule(
         val tx = floor(target.x).toInt()
         val ty = floor(target.y).toInt()
         val tz = floor(target.z).toInt()
+
+        queueCellX = tx; queueCellY = ty; queueCellZ = tz
+        queueTargetId = target.runtimeId
+
         val offsets = if (includeCeiling.value) TRAP_OFFSETS else TRAP_OFFSETS.filter { it.second < 2 }
         val openDir = openingDirection(target)
 
@@ -136,7 +177,12 @@ class AutoTrapModule : BaseModule(
             val current = WorldBlockTracker.getBlockIdentifier(bx, by, bz) ?: continue
             if (current !in AIR_IDS) continue
             val neighbor = PlacementUtil.findClickableNeighbor(bx, by, bz) ?: continue
-            targetQueue.addLast(neighbor)
+            targetQueue.addLast(
+                QueueEntry(
+                    destX = bx, destY = by, destZ = bz,
+                    neighborPos = neighbor.first, supportId = neighbor.second, face = neighbor.third
+                )
+            )
         }
     }
 

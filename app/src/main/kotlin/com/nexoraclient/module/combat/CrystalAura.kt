@@ -311,33 +311,48 @@ class CrystalAura : BaseModule(
         }
     }
 
+    // FULL foot-priority placement (owner's rule): whenever an obsidian or
+    // bedrock base sits NEXT TO the enemy at feet level — laterally, not
+    // just below them — placing there beats every other candidate, no
+    // exceptions. Two tiers of bases are considered:
+    //   Tier 1 (classic): base block one below the foot cell's lateral
+    //     neighbors -> crystal explodes right at their feet.
+    //   Tier 2: the lateral block AT feet level itself is obsidian/bedrock
+    //     -> crystal on top of it explodes at shin height, maximum exposure.
+    // Both tiers require two free cells above the base (Melody parity), so
+    // the placement can't silently fail against low ceilings.
     private fun findAdjacentFootBase(target: EntityTracker.TrackedEntity, dbg: ((String) -> Unit)?): Triple<Int, Int, Int>? {
         if (!WorldBlockTracker.hasAnyTerrainData()) return null
 
         val tx = floor(target.x).toInt()
-        val ty = floor(target.y).toInt() - 1
+        val footY = floor(target.y).toInt()
         val tz = floor(target.z).toInt()
 
         var bestPos: Triple<Int, Int, Int>? = null
         var bestDmg = -1f
-        for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
-            val bx = tx + dx; val bz = tz + dz
-            val id = WorldBlockTracker.getBlockIdentifier(bx, ty, bz) ?: continue
-            if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
-            val above = WorldBlockTracker.getBlockIdentifier(bx, ty + 1, bz)
-            if (above != null && above !in NON_SOLID) continue
+        for (baseY in intArrayOf(footY - 1, footY)) {
+            for ((dx, dz) in listOf(0 to 1, 0 to -1, 1 to 0, -1 to 0, 1 to 1, 1 to -1, -1 to 1, -1 to -1)) {
+                val bx = tx + dx; val bz = tz + dz
+                val id = WorldBlockTracker.getBlockIdentifier(bx, baseY, bz) ?: continue
+                if (id != "minecraft:obsidian" && id != "minecraft:bedrock") continue
+                // needs 2 free cells above the base for the crystal to exist
+                val above1 = WorldBlockTracker.getBlockIdentifier(bx, baseY + 1, bz)
+                if (above1 != null && above1 !in NON_SOLID) continue
+                val above2 = WorldBlockTracker.getBlockIdentifier(bx, baseY + 2, bz)
+                if (above2 != null && above2 !in NON_SOLID) continue
 
-            val dmg = simulateExplosionDamage(bx + 0.5f, ty + 2f, bz + 0.5f)
-            if (!suicide.value && dmg.selfDamage > maxSelfDmg.value) continue
-            val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
-            if (eff < minPlaceDmg.value && !suicide.value) continue
-            if (eff > bestDmg) {
-                bestDmg = eff
-                bestPos = Triple(bx, ty, bz)
+                val dmg = simulateExplosionDamage(bx + 0.5f, baseY + 2f, bz + 0.5f)
+                if (!suicide.value && dmg.selfDamage > maxSelfDmg.value) continue
+                val eff = if (dmg.selfDamage > dmg.mostDamage && !suicide.value) -1f else dmg.mostDamage
+                if (eff < minPlaceDmg.value && !suicide.value) continue
+                if (eff > bestDmg) {
+                    bestDmg = eff
+                    bestPos = Triple(bx, baseY, bz)
+                }
             }
         }
         if (bestPos != null && bestDmg > 0f) {
-            dbg?.invoke("PRIORITY adjacent base $bestPos dmg=${bestDmg.toInt()}")
+            dbg?.invoke("FULL-PRIORITY foot base $bestPos dmg=${bestDmg.toInt()}")
             return bestPos
         }
         return null
