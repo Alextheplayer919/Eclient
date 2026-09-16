@@ -3,6 +3,7 @@ package com.rubidiumclient.session
 import com.rubidiumclient.auth.AccountManager
 import com.rubidiumclient.config.ServerConfig
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.NativeFeedServer
 import com.rubidiumclient.core.relay.ConnectionManager
 import com.rubidiumclient.core.relay.LanBroadcaster
 import com.rubidiumclient.core.relay.RubidiumRelay
@@ -65,6 +66,7 @@ object SessionManager {
 
         try {
             EntityTracker.init()
+            NativeFeedServer.start()
             BlockTracker.clear()
 
             val r = RubidiumRelay(localPort = localPort)

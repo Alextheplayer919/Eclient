@@ -2,7 +2,7 @@ name: OxClient APK Build
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, attach-experiment ]
   workflow_dispatch:
 
 jobs:

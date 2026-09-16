@@ -13,21 +13,30 @@
 //   - logging             → __android_log_print, tag "EclientAttach"
 // No LeviLaunchroid, no preloader runtime, no loader-side plugins.
 //
-// Scope of phase 1 (go/no-go gate — read-only):
+// Scope of phase A (HYBRID experiment — native eyes, relay brain):
 //   1. Wait until libminecraftpe.so is mapped in this process.
 //   2. ARM64-wildcard pattern-scan for ClientInstance::update +
 //      ClientInstance::getLocalPlayer (patterns adapted from the open-source
 //      BedrockTools mod, Apache-2.0 — github.com/QYCottage/BedrockTools).
-//   3. DobbyHook the update fn, capture ClientInstance*.
-//   4. Every ~10 s read the local player's position/rotation from
-//      StateVectorComponent / ActorRotationComponent and log it.
+//   3. And64Hook the update fn, capture ClientInstance*.
+//   4. Every update frame read the local player's StateVectorComponent
+//      (pos, velocity) + ActorRotationComponent (pitch/yaw) and STREAM it to
+//      the Eclient relay app over 127.0.0.1:19137 (one line per frame,
+//      see docs/HYBRID.md for the protocol). Every ~10 s the old logcat line
+//      stays as the sanity-check.
 // If any scan fails: log it loudly and do nothing — game runs stock.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <pthread.h>
+#include <time.h>
 #include <unistd.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <android/log.h>
 
@@ -77,9 +86,88 @@ void logE(const char* fmt, ...) {
     __builtin_va_end(ap);
 }
 
+// ── Loopback feed → Eclient relay (hybrid phase A) ─────────────────────────
+// One localhost TCP socket, one text line per frame; the relay app
+// (NativeFeedServer) consumes these into EntityTracker's self-state.
+constexpr int FEED_PORT = 19137;
+
+int  g_feedFd         = -1;
+long g_feedLastTryMs  = 0;
+long g_feedLastSentMs = 0;
+
+long nowMs() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+void feedEnsure() {
+    if (g_feedFd >= 0) return;
+    const long t = nowMs();
+    if (t - g_feedLastTryMs < 3000) return; // don't hammer reconnect
+    g_feedLastTryMs = t;
+
+    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return;
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(FEED_PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        return;
+    }
+    g_feedFd = fd;
+    logI("native feed connected to relay @127.0.0.1:%d", FEED_PORT);
+}
+
+void feedSelfState(float x, float y, float z,
+                   float rotA, float rotB,
+                   float vx, float vy, float vz,
+                   uint64_t tick) {
+    if (g_feedFd < 0) return;
+    const long t = nowMs();
+    if (t - g_feedLastSentMs < 30) return; // ~33 Hz cap, tick is 20-60 fps
+    g_feedLastSentMs = t;
+
+    char buf[160];
+    const int n = snprintf(buf, sizeof buf,
+        "EA1 %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %llu\n",
+        x, y, z, rotA, rotB, vx, vy, vz,
+        static_cast<unsigned long long>(tick));
+    if (n <= 0) return;
+    if (send(g_feedFd, buf, static_cast<size_t>(n), MSG_NOSIGNAL) <= 0) {
+        close(g_feedFd);
+        g_feedFd = -1;
+        logI("native feed lost (relay closed?) — will retry");
+    }
+}
+
 void* clientUpdateDetour(void* self, bool flag) {
     g_clientInstance.store(self, std::memory_order_release);
     const uint64_t tick = g_updateCount.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    // Hybrid feed: cheap component reads every frame; the feed itself
+    // throttles to ~33 Hz and stays silent while the relay isn't up.
+    if (g_getLocalPlayer != nullptr) {
+        if (void* player = g_getLocalPlayer(self)) {
+            auto* bytes    = static_cast<char*>(player);
+            void* stateVec = *reinterpret_cast<void**>(bytes + OFF_STATE_VECTOR_COMPONENT);
+            void* rotComp  = *reinterpret_cast<void**>(bytes + OFF_ROTATION_COMPONENT);
+            if (stateVec != nullptr && rotComp != nullptr) {
+                struct { float x, y, z; } pos{};
+                float vel[3]; // stateVector layout: { Vec3 pos ; Vec3 posPrev ; Vec3 velocity }
+                struct { float a, b; }  rot{};
+                std::memcpy(&pos, stateVec, sizeof(pos));
+                std::memcpy(vel, static_cast<char*>(stateVec) + 24, sizeof(vel));
+                std::memcpy(&rot, rotComp,  sizeof(rot));
+                // velocity offsets are heuristic — clamp wild reads to zero
+                for (float& v : vel) { if (!(v > -64.f && v < 64.f)) v = 0.f; }
+                feedEnsure();
+                feedSelfState(pos.x, pos.y, pos.z, rot.a, rot.b, vel[0], vel[1], vel[2], tick);
+            }
+        }
+    }
 
     // ~60 fps → frame 1 immediately, then every 600th frame ≈ once / 10 s.
     if (tick == 1 || tick % 600 == 0) {

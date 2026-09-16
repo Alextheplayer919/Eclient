@@ -384,9 +384,15 @@ private fun handleAuthInput(p: PlayerAuthInputPacket, dir: PacketEvent.Direction
     if (dir != PacketEvent.Direction.CLIENT_TO_SERVER) return
     prevSelfX = selfX; prevSelfZ = selfZ
     selfPrevY = selfY
-    selfX = p.position.x; selfY = p.position.y; selfZ = p.position.z
-    selfYaw = p.rotation.y; selfPitch = p.rotation.x
-    selfSpeedXZ = MathUtil.dist2(selfX, selfZ, prevSelfX, prevSelfZ)
+    // Hybrid phase A: when the native feed is fresh it carries the exact
+    // in-game self state — AuthInput echoes are stale by comparison, so
+    // don't let them overwrite it. Input-bit handling below (eating/sprint)
+    // keeps running regardless.
+    if (!nativeActive) {
+        selfX = p.position.x; selfY = p.position.y; selfZ = p.position.z
+        selfYaw = p.rotation.y; selfPitch = p.rotation.x
+        selfSpeedXZ = MathUtil.dist2(selfX, selfZ, prevSelfX, prevSelfZ)
+    }
     if (p.inputData.contains(PlayerAuthInputData.START_SPRINTING)) selfSprinting = true
     if (p.inputData.contains(PlayerAuthInputData.STOP_SPRINTING)) selfSprinting = false
 
@@ -675,6 +681,32 @@ private fun handleAuthInput(p: PlayerAuthInputPacket, dir: PacketEvent.Direction
     }
 
     fun getHeldItem(): ItemData? = selfInventory[selfHotbarSlot]
+
+    // ── Native feed state (hybrid phase A) ─────────────────────────────
+    // Filled by NativeFeedServer from libeclient_attach.so hooked into the
+    // game process; while fresh, AuthInput echoes stop overwriting self
+    // position/rotation (handleAuthInput checks nativeActive).
+    @Volatile var nativeLastFrameMs = 0L
+    @Volatile var nativeTick = 0L
+    @Volatile var nativeVelX = 0f
+    @Volatile var nativeVelY = 0f
+    @Volatile var nativeVelZ = 0f
+
+    val nativeActive: Boolean
+        get() = System.currentTimeMillis() - nativeLastFrameMs < 500L
+
+    fun ingestNativeFrame(
+        x: Float, y: Float, z: Float,
+        pitch: Float, yaw: Float,
+        vx: Float, vy: Float, vz: Float,
+        tick: Long
+    ) {
+        selfX = x; selfY = y; selfZ = z
+        selfYaw = yaw; selfPitch = pitch
+        nativeVelX = vx; nativeVelY = vy; nativeVelZ = vz
+        nativeTick = tick
+        nativeLastFrameMs = System.currentTimeMillis()
+    }
 
     fun getInventorySnapshot(): Map<Int, ItemData> = selfInventory.toMap()
 
