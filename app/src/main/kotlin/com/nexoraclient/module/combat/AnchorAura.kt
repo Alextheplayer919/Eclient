@@ -6,19 +6,38 @@ import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
 import com.rubidiumclient.module.social.isFriendEntity
+import com.rubidiumclient.utils.DiagLog
 import com.rubidiumclient.utils.MathUtil
 import com.rubidiumclient.utils.PlacementUtil
 import com.rubidiumclient.utils.WorldBlockTracker
 import com.rubidiumclient.utils.InventoryUtil
 import kotlinx.coroutines.*
 import org.cloudburstmc.math.vector.Vector3i
+import org.cloudburstmc.protocol.bedrock.packet.TextPacket
 import kotlin.math.floor
 import java.util.concurrent.CopyOnWriteArrayList
 
+/**
+ * AnchorAura — the Overworld anchor loop, per real Bedrock mechanics:
+ *
+ *   1. PLACE the anchor by clicking a SOLID neighbor block with a face
+ *      (vanilla semantics — the server rejects clicked-air placements, which
+ *      is why the old "click the air cell" version silently never placed).
+ *   2. RIGHT-CLICK THE ANCHOR WITH GLOWSTONE. In the Overworld/End this is
+ *      the detonation itself: the anchor explodes on that click. In the
+ *      Nether that click instead ADDS A CHARGE, so…
+ *   3. if the anchor is STILL THERE after the glowstone click (Nether case),
+ *      punch it once with any non-glowstone hand to trigger the boom.
+ *   4. Loop back to 1 on a 300 ms drop of the completed attempt.
+ *
+ * Switching is EXPLICIT (owner request, no silent-switch games): we select
+ * the item slot, send the use, and restore the slot with a plain
+ * MobEquipmentPacket afterwards.
+ */
 class AnchorAura : BaseModule(
     name        = "AnchorAura",
     category    = ModuleCategory.COMBAT,
-    description = "Rapid anchor bomber – place, charge with glowstone, detonate"
+    description = "Rapid anchor bomber – place, glowstone-click (boom), repeat"
 ) {
 
     // ── Settings ─────────────────────────────────────────
@@ -33,6 +52,7 @@ class AnchorAura : BaseModule(
     private val noSwitch        = bool("No Switch",       false)
     private val forceMode       = bool("Force",           false)
     private val shortcut        = bool("Shortcut",        false)
+    private val log             = bool("Log",             false)
 
     // ── Block constants ──────────────────────────────────
     private val ANCHOR    = "minecraft:respawn_anchor"
@@ -55,9 +75,11 @@ class AnchorAura : BaseModule(
     @Volatile private var lastAttemptMs = 0L
     @Volatile private var lastPacketMs = 0L
     private var tickJob: Job? = null
-    
-    // Track original hotbar slot for restoration
+
     private var originalHotbarSlot = -1
+
+    @Volatile private var lastFailLogMs = 0L
+    @Volatile private var lastChatFailMs = 0L
 
     override fun onEnable() {
         super.onEnable()
@@ -95,8 +117,7 @@ class AnchorAura : BaseModule(
         for (attempt in activeAttempts.toList()) {
             if (attempt.activated) {
                 // The anchor no longer exists post-detonation — drop the
-                // attempt quickly so the place->charge->detonate loop restarts
-                // on the same spot instead of idling 3 s per cycle.
+                // attempt quickly so the loop restarts on the same spot.
                 if (now - attempt.placedAt > 300L) {
                     activeAttempts.remove(attempt)
                 }
@@ -112,6 +133,7 @@ class AnchorAura : BaseModule(
                         attempt.nextCheckAt = now + 20L
                     }
                     VerifyResult.REJECTED -> {
+                        logFail(session, "anchor rejected \u0040 ${attempt.pos.x},${attempt.pos.y},${attempt.pos.z} (block never appeared)")
                         activeAttempts.remove(attempt)
                         continue
                     }
@@ -122,7 +144,7 @@ class AnchorAura : BaseModule(
                 }
             }
 
-            // Charge phase: send glowstone once when verified
+            // Glowstone-click phase: in the Overworld this IS the detonation.
             if (attempt.verified && !attempt.charged && !attempt.activated) {
                 if (canSendPacket()) {
                     charge(session, attempt)
@@ -132,7 +154,8 @@ class AnchorAura : BaseModule(
                 continue
             }
 
-            // Detonate phase: wait chargeDelayMs, then detonate
+            // Nether-only punch phase: if the anchor still exists after the
+            // glowstone click, that click was a CHARGE; punch once to pop it.
             if (attempt.charged && !attempt.activated) {
                 if (now - attempt.chargedAt >= chargeDelayMs.value.toLong()) {
                     if (canSendPacket()) {
@@ -151,103 +174,112 @@ class AnchorAura : BaseModule(
         attemptPlace(session, target)
     }
 
-    // ── Enhanced Target Selection ──────────────────────────────────
+    // ── Target selection ──────────────────────────────────
     private fun nearestEnemy(): EntityTracker.TrackedEntity? {
         val busy = activeAttempts.map { it.targetId }.toSet()
         return EntityTracker.getPlayers(targetRange.value.toFloat())
             .filter { it.runtimeId != EntityTracker.selfRuntimeId && it.runtimeId !in busy }
             .filter { !friendSkip.value || !it.isFriendEntity }
-            // ✅ Improved detection: filter out dead/invalid players
-            .filter { it.x != 0f || it.y != 0f || it.z != 0f }  // exclude null position
+            .filter { it.x != 0f || it.y != 0f || it.z != 0f }
             .minByOrNull { MathUtil.dist3sq(it.x, it.y, it.z, EntityTracker.selfX, EntityTracker.selfY, EntityTracker.selfZ) }
     }
 
-    // ── Placement logic with validation ───────────────────────────────────
-    private fun findPlacementSpot(target: EntityTracker.TrackedEntity): Vector3i? {
+    // ── Placement spot (air cell + the solid neighbor we click) ──
+    private data class Spot(val air: Vector3i, val nPos: Vector3i, val nId: String, val nFace: Int)
+
+    private fun findPlacementSpot(target: EntityTracker.TrackedEntity): Spot? {
         val tx = floor(target.x).toInt()
         val ty = floor(target.y).toInt()
         val tz = floor(target.z).toInt()
-        
-        // Scan a 5x5x5 region around target, prioritize closer positions
-        val candidates = mutableListOf<Pair<Vector3i, Float>>()
-        
+
+        val candidates = mutableListOf<Pair<Spot, Float>>()
+
         for (dy in -2..2) {
             for (dx in -2..2) {
                 for (dz in -2..2) {
                     val px = tx + dx
                     val py = ty + dy
                     val pz = tz + dz
-                    
-                    // ✅ VALIDATION: Must have world data
+
                     if (!WorldBlockTracker.hasData(px, py, pz)) continue
-                    
                     val block = WorldBlockTracker.getBlockIdentifier(px, py, pz) ?: "air"
-                    
-                    // ✅ VALIDATION: placement spot must be air/liquid
                     if (block !in NON_SOLID) continue
-                    
-                    // ✅ VALIDATION: check for solid below
+
                     val below = WorldBlockTracker.getBlockIdentifier(px, py - 1, pz) ?: "air"
                     if (below in NON_SOLID) continue
-                    
-                    // ✅ VALIDATION: Must be within placeRange
+
                     val dist = MathUtil.dist3(px + 0.5f, py + 0.5f, pz + 0.5f,
                         EntityTracker.selfX, EntityTracker.selfY + 1.62f, EntityTracker.selfZ)
                     if (dist > placeRange.value && !forceMode.value) continue
-                    
-                    // ✅ VALIDATION: ensure anchor is actually placeable (not against void/bedrock)
+
+                    // The magic part the old module missed: the placement
+                    // packet must click a SOLID NEIGHBOR (pos+face), not the
+                    // air cell — vanilla sends "I clicked THIS block on THIS
+                    // face", and the server drops the result into the air cell.
                     val neighbor = PlacementUtil.findClickableNeighbor(px, py, pz)
                     if (neighbor == null && !forceMode.value) continue
-                    
-                    candidates.add(Pair(Vector3i.from(px, py, pz), dist))
+                    val (nPos, nId, nFace) = neighbor ?: Triple(Vector3i.from(px, py - 1, pz), "minecraft:obsidian", 1)
+
+                    candidates.add(Pair(Spot(Vector3i.from(px, py, pz), nPos, nId, nFace), dist))
                 }
             }
         }
-        
-        // Return closest valid spot
+
         return candidates.minByOrNull { it.second }?.first
-            ?: if (forceMode.value) Vector3i.from(tx, ty, tz) else null
+            ?: if (forceMode.value) {
+                Spot(Vector3i.from(tx, ty, tz), Vector3i.from(tx, ty - 1, tz), "minecraft:obsidian", 1)
+            } else null
     }
 
     private fun attemptPlace(session: RubidiumRelaySession, target: EntityTracker.TrackedEntity) {
-        val pos = findPlacementSpot(target) ?: return
+        val spot = findPlacementSpot(target) ?: run {
+            logFail(session, "no spot (need world data / blocks nearby; Force bypasses)")
+            return
+        }
         if (!canSendPacket()) return
 
-        // ✅ STEP 1: Check if anchor is available
-        val anchorSlot = PlacementUtil.findItemInInventory(ANCHOR)
-        if (anchorSlot == null) return
+        val anchorSlot = PlacementUtil.findItemInInventory(ANCHOR) ?: run {
+            logFail(session, "no respawn anchor in inventory")
+            return
+        }
 
-        // ✅ STEP 2: Switch to anchor (save original slot)
-        originalHotbarSlot = EntityTracker.selfHotbarSlot
+        val originalSlot = EntityTracker.selfHotbarSlot
         val prepared = PlacementUtil.prepareItemForUse(
             session = session,
-            identifier = ANCHOR
-            // silent switch (default): server sees select -> place -> select-back,
-            // HUD never moves, and revert() restores your real held item below
-        ) ?: return
+            identifier = ANCHOR,
+            noSwitch = false  // explicit: select, use, plain restore after
+        ) ?: run {
+            logFail(session, "could not prepare anchor item")
+            return
+        }
 
-        // ✅ STEP 3: Send placement packet
+        // Click the solid neighbor — THIS is what vanilla actually sends.
         val success = PlacementUtil.sendPlacementUseRaw(
             session = session,
             prepared = prepared,
-            blockPos = pos,
-            blockId = ANCHOR,
-            blockFace = 1
+            blockPos = spot.nPos,
+            blockId = spot.nId,
+            blockFace = spot.nFace
         )
-        PlacementUtil.revert(session, prepared)
-        if (!success) return
+        InventoryUtil.sendHotbarSelect(session, originalSlot)
+        EntityTracker.selfHotbarSlot = originalSlot
+        if (!success) {
+            logFail(session, "placement send failed")
+            return
+        }
 
-        lastAttemptMs = System.currentTimeMillis()
         val now = System.currentTimeMillis()
+        lastAttemptMs = now
         activeAttempts.add(
             Attempt(
-                pos = pos,
+                pos = spot.air,
                 placedAt = now,
                 verifyDeadline = now + 300L,
                 targetId = target.runtimeId,
                 nextCheckAt = now + 20L
             )
         )
+        sendLog(session, "placed @ ${spot.air.x},${spot.air.y},${spot.air.z}")
     }
 
     // ── Verification ──────────────────────────────────────
@@ -266,23 +298,24 @@ class AnchorAura : BaseModule(
         }
     }
 
-    // ── Charge: apply glowstone to anchor ──
+    // ── Charge = glowstone click = Overworld detonation ──
     private fun charge(session: RubidiumRelaySession, attempt: Attempt) {
-        // ✅ STEP 1: Check if glowstone exists
-        val glowstoneSlot = PlacementUtil.findItemInInventory(GLOWSTONE)
-        if (glowstoneSlot == null) {
+        val glowstoneSlot = PlacementUtil.findItemInInventory(GLOWSTONE) ?: run {
+            logFail(session, "no glowstone in inventory")
             attempt.charged = false
             return
         }
 
-        // ✅ STEP 2: Switch to glowstone
+        val originalSlot = EntityTracker.selfHotbarSlot
         val glowstone = PlacementUtil.prepareItemForUse(
             session = session,
-            identifier = GLOWSTONE
-            // silent switch (default): sandwich + auto-restore via revert()
-        ) ?: return
+            identifier = GLOWSTONE,
+            noSwitch = false
+        ) ?: run {
+            attempt.charged = false
+            return
+        }
 
-        // ✅ STEP 3: Use glowstone on the anchor to charge it
         val chargeSuccess = PlacementUtil.sendPlacementUseRaw(
             session = session,
             prepared = glowstone,
@@ -290,18 +323,30 @@ class AnchorAura : BaseModule(
             blockId = ANCHOR,
             blockFace = 1
         )
-        PlacementUtil.revert(session, glowstone)
+        InventoryUtil.sendHotbarSelect(session, originalSlot)
+        EntityTracker.selfHotbarSlot = originalSlot
 
         if (!chargeSuccess) {
             attempt.charged = false
+        } else {
+            sendLog(session, "glowstone-click @ ${attempt.pos.x},${attempt.pos.y},${attempt.pos.z}")
         }
     }
 
-    // ── Detonate: right-click charged anchor ──
+    // ── Nether-only punch: anchor still there -> pop it ──
     private fun detonate(session: RubidiumRelaySession, attempt: Attempt) {
-        // ✅ STEP 0: hands check — clicking a charged anchor while holding
-        // glowstone ADDS A CHARGE instead of detonating it. If the current
-        // hand is glowstone, switch to any safe slot first.
+        // Overworld check first: if world data says the anchor is already
+        // gone, the glowstone click already blew it — nothing to punch.
+        if (WorldBlockTracker.hasData(attempt.pos.x, attempt.pos.y, attempt.pos.z)) {
+            val id = WorldBlockTracker.getBlockIdentifier(attempt.pos.x, attempt.pos.y, attempt.pos.z)
+            if (id != null && id != ANCHOR) {
+                sendLog(session, "boom (glowstone click did it)")
+                return
+            }
+        }
+
+        // Hands check: clicking a charged anchor WITH glowstone would add
+        // another charge instead of detonating. Swap off glowstone first.
         val heldId = EntityTracker.getHeldItem()?.let { InventoryUtil.resolveIdentifier(it) }
         if (heldId == GLOWSTONE) {
             for (s in 0..8) {
@@ -314,17 +359,41 @@ class AnchorAura : BaseModule(
             }
         }
 
-        // ✅ STEP 1: Save current slot
-        val beforeDetonateSlot = EntityTracker.selfHotbarSlot
-        
-        // ✅ STEP 2: Right-click the anchor to detonate it
         PlacementUtil.sendInteract(session, attempt.pos, ANCHOR)
-        
-        // ✅ STEP 3: Restore to original slot if needed
-        if (beforeDetonateSlot != originalHotbarSlot) {
+
+        if (EntityTracker.selfHotbarSlot != originalHotbarSlot) {
             InventoryUtil.sendHotbarSelect(session, originalHotbarSlot)
             EntityTracker.selfHotbarSlot = originalHotbarSlot
         }
+        sendLog(session, "punch @ ${attempt.pos.x},${attempt.pos.y},${attempt.pos.z}")
+    }
+
+    // ── Logging (so "it doesn't react" always explains itself) ──
+    private fun sendLog(session: RubidiumRelaySession, message: String) {
+        if (!log.value) return
+        try {
+            session.sendToClient(TextPacket().apply {
+                type               = TextPacket.Type.RAW
+                isNeedsTranslation = false
+                sourceName         = ""
+                xuid               = ""
+                platformChatId     = ""
+                setMessage("§6[AnchorAura]§f $message")
+                setFilteredMessage("")
+            })
+        } catch (_: Exception) {}
+    }
+
+    private fun logFail(session: RubidiumRelaySession, message: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastFailLogMs >= 1000L) {
+            lastFailLogMs = now
+            DiagLog.log("AnchorAura", "⚠ $message")
+        }
+        if (!log.value) return
+        if (now - lastChatFailMs < 10000L) return
+        lastChatFailMs = now
+        sendLog(session, "⚠ $message")
     }
 
     companion object {

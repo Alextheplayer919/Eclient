@@ -268,6 +268,18 @@ class CrystalAura : BaseModule(
             return
         }
 
+        // Never place away from the fight: final gate — the base must sit
+        // next to the chosen target, not next to some obsidian we passed
+        // "miles away" (owner's stairs report). Foot-tier bases are adjacent
+        // by construction, but reused scanned/locked bases are not.
+        if (MathUtil.dist3(base.first + 0.5f, base.second + 1f, base.third + 0.5f,
+                           target.x, target.y, target.z) > range.value + 1f) {
+            logFail(session, "base too far from target — rescanning")
+            lockedBase = null
+            PlacementUtil.revert(session, prepared)
+            return
+        }
+
         val blockId = WorldBlockTracker.getBlockIdentifier(base.first, base.second, base.third)
         if (blockId == null) {
             PlacementUtil.revert(session, prepared)
@@ -408,6 +420,9 @@ class CrystalAura : BaseModule(
         if (candidates.isEmpty()) return null
 
         val scored = candidates.mapNotNull { p ->
+            // target-anchored: a base that can't even hurt THIS enemy is noise
+            if (MathUtil.dist3(p.first + 0.5f, p.second + 1f, p.third + 0.5f,
+                               target.x, target.y, target.z) > range.value) return@mapNotNull null
             val cx = p.first + 0.5f; val cy = p.second + 2f; val cz = p.third + 0.5f
             val dmg = simulateExplosionDamage(cx, cy, cz)
             if (!suicide.value && dmg.selfDamage > maxSelfDmg.value) return@mapNotNull null
