@@ -30,6 +30,7 @@ step() { echo "[patch] $*"; }
 command -v apktool >/dev/null   || fail "apktool missing — pkg install apktool"
 command -v apksigner >/dev/null || fail "apksigner missing — pkg install apksigner"
 command -v keytool >/dev/null   || fail "keytool missing — pkg install openjdk-17"
+command -v python3 >/dev/null   || fail "python3 missing — pkg install python"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -44,19 +45,61 @@ DECODED="$WORK/decoded"
 # ── 2. find the launcher's entry activity ──────────────────────────────────
 step "2/6 locating entry activity"
 MANIFEST="$DECODED/AndroidManifest.xml"
-ENTRY=$(grep -oE 'android:name="[^"]+"' "$MANIFEST" | head -1 | sed 's/android:name="//;s/"//')
-if [[ -z "$ENTRY" ]]; then
-  ENTRY=$(grep -oE '<application[^>]*android:name="[^"]+"' "$MANIFEST" \
-          | sed 's/.*android:name="//;s/".*//' | head -1)
+if ! ENTRY=$(python3 - "$MANIFEST" <<'PYEOF'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+
+m = re.search(r'^\s*<manifest[^>]*\bpackage="([^"]+)"', src, re.M)
+pkg = m.group(1) if m else ""
+
+# Every <activity ...> element. A regex can't use "/>" as the terminator
+# (children like <action .../> would end the block early), so walk start tags
+# and find each element's real close.
+for m in re.finditer(r'<activity\b', src):
+    start = m.start()
+    gt = src.find('>', start)
+    if gt == -1:
+        break
+    if src[gt - 1] == '/':
+        block = src[start:gt + 1]          # self-closing, no children
+    else:
+        end = src.find('</activity>', gt)
+        block = src[start:end] if end != -1 else src[start:]
+    if 'android.intent.action.MAIN' not in block:
+        continue
+    if 'android.intent.category.LAUNCHER' not in block:
+        continue
+    name = re.search(r'\bandroid:name="([^"]+)"', block)
+    if not name:
+        continue
+    name = name.group(1)
+    if name.startswith('.'):
+        name = pkg + name
+    elif '.' not in name:
+        name = pkg + '.' + name
+    print(name)
+    sys.exit(0)
+
+# Fallback: application-level entry class (no explicit launcher activity found)
+app = re.search(r'<application[^>]*\bandroid:name="([^"]+)"', src)
+if app:
+    name = app.group(1)
+    if name.startswith('.'):
+        name = pkg + name
+    print(name)
+    sys.exit(0)
+
+sys.exit(1)
+PYEOF
+); then
+  fail "could not determine launcher activity from manifest"
 fi
-[[ -n "$ENTRY" ]] || fail "could not determine entry class from manifest"
-ENTRY_PATH="${ENTRY#.}"
-ENTRY_PATH="${ENTRY_PATH//.//}"
+ENTRY_PATH="${ENTRY//.//}"
 
 SMALI_FILE=""
 for smali_dir in "$DECODED"/smali*; do
   [[ -d "$smali_dir" ]] || continue
-  candidate="$smali_dir/${ENTRY_PATH#*/}.smali"
+  candidate="$smali_dir/${ENTRY_PATH}.smali"
   [[ -f "$candidate" ]] && SMALI_FILE="$candidate" && break
 done
 [[ -n "$SMALI_FILE" ]] || fail "entry smali not found for $ENTRY — check manifest structure"
