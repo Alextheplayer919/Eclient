@@ -70,7 +70,23 @@ object EatingGuard {
                 // but bail out earlier so a stuck bit cannot freeze combat.
                 if (heldFor > maxUseMs) return false
 
-                pauseOnAnyItemUse || isHoldingFood() || isHoldingPotion()
+                if (pauseOnAnyItemUse) return true
+                if (isHoldingFood() || isHoldingPotion()) return true
+
+                // Fail-smarter fallback for servers where item definitions are
+                // missing/unresolvable: the strict path above returns false
+                // there, which left combat free to swing (and Target Lock free
+                // to fire its position mirror) straight through a bite — the
+                // "eating/drinking doesn't work" report. If the held item's
+                // identity can NOT be resolved and the use sits inside the
+                // real consumable window (0.3–1.8s; vanilla eat = 1.61s),
+                // treat it as eating. Generic block/bow holds escape the
+                // window after 1.8s.
+                if (InventoryUtil.isIdentityUnknown(EntityTracker.getHeldItem()) &&
+                    heldFor >= 300L && heldFor <= 1800L
+                ) return true
+
+                return false
             } catch (e: Exception) {
                 // Never let a guard break the packet path.
                 DiagLog.log(TAG, "isEating threw: ${e.message}")

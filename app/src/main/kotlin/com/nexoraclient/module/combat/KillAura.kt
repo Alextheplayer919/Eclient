@@ -42,6 +42,16 @@ class KillAura : BaseModule(
     description = "Melody-style KillAura: Aim/Random rotations, real Target Lock strafe, Quantum prediction, silent weapon switch"
 ), PacketEventBus.PacketListener {
 
+    /**
+     * Listener order on the bus: 100 = default (movement modules like
+     * MotionFly read the packet FIRST and see the player's own camera/input
+     * untouched), 200 = combat rotation writers run LAST so they always
+     * compose on top of the final packet regardless of module enable order.
+     * Without this, enabling MotionFly before KillAura made rotation state
+     * dependent on registration sequence.
+     */
+    override val priority: Int = 200
+
     // ── Attack settings ────────────────────────────────────
     private val attackMode     = enum("Attack Mode", AttackMode.CPS)
     private val cps            = int("CPS",          25, 1, 50)
@@ -86,6 +96,9 @@ class KillAura : BaseModule(
 
     companion object {
         private const val TARGET_SCAN_INTERVAL = 100L
+        // Never spiral closer than this into the target's face, even if the
+        // owner cranks Lock Distance below it.
+        private const val MIN_LOCK_RADIUS = 2.0f
     }
 
     // ── State ──────────────────────────────────────────────
@@ -101,6 +114,7 @@ class KillAura : BaseModule(
 
     private var lastLockTarget: EntityTracker.TrackedEntity? = null
     private var lockLastTickMs = 0L
+    private var lockRadius     = 0f // 0 = uninitialized; first lock = slider
 
     private var randomYawOffset = 0f
     private var randomPitchOffset = 0f
@@ -127,6 +141,7 @@ class KillAura : BaseModule(
         quantumConfidence = 1.0f
         lastLockTarget = null
         lockLastTickMs = 0L
+        lockRadius = 0f
         randomYawOffset = 0f
         randomPitchOffset = 0f
         lastRandomTarget = null
@@ -418,21 +433,40 @@ class KillAura : BaseModule(
         shouldRot = true
     }
 
-    // ── Target Lock: REAL movement circling, not a yaw gimmick. Holds
-    //    "Lock Distance" (blocks) away from the target; while LEFT or RIGHT
-    //    strafe is held you walk around the target at "Lock Speed" in that
-    //    direction; with no strafe input you simply stand, rotation glued.
+    // ── Target Lock: REAL movement circling, not a yaw gimmick.
+    //
+    //    Geometry (owner's circle diagram): you are a dot on a circle, the
+    //    target is the center.
+    //      • LEFT strafe held  -> you walk the circle counter-clockwise
+    //      • RIGHT strafe held -> clockwise
+    //      • neither held      -> you simply stop circling, rotation pinned
+    //      • forward input     -> radius shrinks smoothly (spiral in),
+    //        but NEVER past 2 blocks — no face-hug spinning
+    //      • backward input    -> radius grows back out (up to Lock slider)
+    //
     //    Server-side this is ordinary movement (the position inside your own
-    //    PlayerAuthInputPacket is rewritten); the same step is mirrored back
-    //    to the client via a forced MovePlayerPacket so the game actually
-    //    renders the circle instead of rubber-banding you back to your own
-    //    local physics. No world data on the wire -> the circle is naive
-    //    geometry and does not path around walls. ──
+    //    PlayerAuthInputPacket is rewritten); each step is mirrored back to
+    //    the client via a forced MovePlayerPacket so the game renders the
+    //    circle instead of rubber-banding. No world data on the wire -> the
+    //    circle is naive geometry and does not path around walls. ──
     private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket, session: RubidiumRelaySession) {
         val nowMs = System.currentTimeMillis()
         if (lastLockTarget != target || lockLastTickMs <= 0L) {
             lastLockTarget = target
             lockLastTickMs = nowMs
+            lockRadius = 0f
+        }
+        if (lockRadius <= 0f) lockRadius = lockDistance.value.coerceAtLeast(MIN_LOCK_RADIUS)
+
+        val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
+
+        // Radial breathing (analog stick forward/back comes through the
+        // packet's motion vector, untouched by any rotation module).
+        val radiusMin = minOf(MIN_LOCK_RADIUS, lockDistance.value)
+        val fwdIn = pkt.motion.y
+        when {
+            fwdIn > 0.25f  -> lockRadius = (lockRadius - lockSpeed.value * 0.5f * dt).coerceAtLeast(radiusMin)
+            fwdIn < -0.25f -> lockRadius = (lockRadius + lockSpeed.value * 0.5f * dt).coerceAtMost(lockDistance.value.coerceAtLeast(radiusMin))
         }
 
         var spinDir = 0f
@@ -440,14 +474,12 @@ class KillAura : BaseModule(
         else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = -1f
 
         if (spinDir != 0f) {
-            val radius = lockDistance.value.coerceAtLeast(0.5f)
-            val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
-            val step = (lockSpeed.value / radius) * dt
+            val step = (lockSpeed.value / lockRadius) * dt
 
             val angle = atan2(EntityTracker.selfZ - target.z, EntityTracker.selfX - target.x)
             val nextAngle = angle + spinDir * step
-            val nx = target.x + radius * cos(nextAngle)
-            val nz = target.z + radius * sin(nextAngle)
+            val nx = target.x + lockRadius * cos(nextAngle)
+            val nz = target.z + lockRadius * sin(nextAngle)
             val ny = pkt.position.y
 
             pkt.position = Vector3f.from(nx, ny, nz)
