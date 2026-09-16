@@ -1,11 +1,13 @@
 package com.rubidiumclient.module.combat
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
 import com.rubidiumclient.module.social.isFriendEntity
+import com.rubidiumclient.utils.InventoryUtil
 import com.rubidiumclient.utils.MathUtil
 import com.rubidiumclient.utils.PacketUtil
 import com.rubidiumclient.utils.RotationUtil
@@ -16,14 +18,42 @@ import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
 import kotlin.math.*
 import kotlin.random.Random
 
+// Named modes (Melody V2 port): every selection setting shows a real name in
+// the menu instead of a number that needs a code comment to decode.
+private enum class AttackMode { CPS, INTERVAL }
+private enum class TargetMode { SINGLE, SWITCH, MULTI }
+private enum class RotationMode { NONE, AIM, RANDOM, TARGET_LOCK }
+private enum class QuantumAlgo { DYNAMIC, VELOCITY, PATTERN, NEURAL }
+
+/**
+ * Melody "Switch" mode: whether KillAura re-equips the best hotbar weapon for
+ * the attack wave.
+ *  NONE   — never touch the hotbar.
+ *  FULL   — switch to the best weapon and STAY there until the next wave.
+ *  SILENT — switch, attack, switch back in the same wave; the dance only
+ *           exists as a MobEquipmentPacket sandwich on the wire, the HUD
+ *           selection never visibly moves.
+ */
+private enum class WeaponSwitchMode { NONE, FULL, SILENT }
+
 class KillAura : BaseModule(
     name        = "KillAura",
     category    = ModuleCategory.COMBAT,
-    description = "KillAura3 rotations + Quantum + Random + Target Lock"
+    description = "Melody-style KillAura: Aim/Random rotations, real Target Lock strafe, Quantum prediction, silent weapon switch"
 ), PacketEventBus.PacketListener {
 
+    /**
+     * Listener order on the bus: 100 = default (movement modules like
+     * MotionFly read the packet FIRST and see the player's own camera/input
+     * untouched), 200 = combat rotation writers run LAST so they always
+     * compose on top of the final packet regardless of module enable order.
+     * Without this, enabling MotionFly before KillAura made rotation state
+     * dependent on registration sequence.
+     */
+    override val priority: Int = 200
+
     // ── Attack settings ────────────────────────────────────
-    private val attackMode     = int("Attack Mode", 0, 0, 1)
+    private val attackMode     = enum("Attack Mode", AttackMode.CPS)
     private val cps            = int("CPS",          25, 1, 50)
     private val intervalTicks  = int("Interval",      1, 0, 20)
     private val boost          = int("Packets",      2, 1, 10)
@@ -38,16 +68,23 @@ class KillAura : BaseModule(
     private val wallRange     = float("Wall Range",  3f,   0f,  10f)
 
     // ── Target selection ───────────────────────────────────
-    private val targetMode    = int("Target Mode", 2,    0,   2)
+    private val targetMode    = enum("Target Mode", TargetMode.MULTI)
     private val switchDelay   = int("Switch Delay",100,  20,  1000)
 
-    // ── Rotation ──────────────────────────────────────────
-    private val rotMode        = int("Rotation Mode", 1, 0, 4)   // 0=None, 1=Normal, 2=Strafe, 3=Random, 4=Target Lock
-    private val lockDistance   = float("Lock Distance", 180f, 10f, 720f) // Target Lock spin speed, degrees per second, while a strafe input is held
+    // ── Rotation & Target Lock ────────────────────────────
+    // Strafe rotation mode was removed (sine-wobble yaw — strictly worse
+    // than the remaining generators; see docs/MELODY_MODULES.md port notes).
+    private val rotMode        = enum("Rotation Mode", RotationMode.AIM)
+    private val lockDistance   = float("Lock Distance", 3f, 0.5f, 7f) // Target Lock: radius to hold from the target, in BLOCKS
+    private val lockSpeed      = float("Lock Speed", 4.3f, 0.5f, 12f) // Target Lock: circling speed, blocks per second
+
+    // ── Weapon switch (Melody Switch) ──────────────────────
+    private val weaponSwitch   = enum("Weapon Switch", WeaponSwitchMode.NONE)
+    private val hurtTimeCheck  = bool("Hurttime Check", true)
 
     // ── Quantum prediction ─────────────────────────────────
     private val quantum        = bool("Quantum",          false)
-    private val quantumAlgo    = int ("Q-Algorithm",      0,   0,   3)
+    private val quantumAlgo    = enum("Q-Algorithm", QuantumAlgo.DYNAMIC)
     private val quantumStrength= float("Q-Strength",      1.5f, 0f,  5f)
     private val quantumHistory = int ("Q-History",        10,   3,   30)
 
@@ -59,6 +96,9 @@ class KillAura : BaseModule(
 
     companion object {
         private const val TARGET_SCAN_INTERVAL = 100L
+        // Never spiral closer than this into the target's face, even if the
+        // owner cranks Lock Distance below it.
+        private const val MIN_LOCK_RADIUS = 2.0f
     }
 
     // ── State ──────────────────────────────────────────────
@@ -71,11 +111,10 @@ class KillAura : BaseModule(
 
     private var rotAngle = Pair(0f, 0f)
     private var shouldRot = false
-    private var strafeAngle = 0f
 
-    private var spinOffset = 0f
     private var lastLockTarget: EntityTracker.TrackedEntity? = null
     private var lockLastTickMs = 0L
+    private var lockRadius     = 0f // 0 = uninitialized; first lock = slider
 
     private var randomYawOffset = 0f
     private var randomPitchOffset = 0f
@@ -100,9 +139,9 @@ class KillAura : BaseModule(
         velocityHistory.clear()
         lastQuantumTarget = null
         quantumConfidence = 1.0f
-        spinOffset = 0f
         lastLockTarget = null
         lockLastTickMs = 0L
+        lockRadius = 0f
         randomYawOffset = 0f
         randomPitchOffset = 0f
         lastRandomTarget = null
@@ -160,6 +199,35 @@ class KillAura : BaseModule(
 
     private fun EntityTracker.TrackedEntity.isLikelyBot() = name.isBlank() || uniqueId == 0L
 
+    // ── Best weapon scoring (Melody getBestWeaponSlot port) ──
+    // Melody scores slotDamage = attackDamage + 1.25 * sharpnessLevel. The
+    // relay mirror does not carry enchant NBT for hotbar items reliably, so
+    // the port scores by identifier -> base attack damage only; structure is
+    // identical (highest score wins, -1 = nothing worth switching to).
+    private val WEAPON_DAMAGE: Map<String, Float> = mapOf(
+        "netherite_sword" to 8f, "diamond_sword" to 7f,  "iron_sword" to 6f,
+        "stone_sword"     to 5f, "wooden_sword"  to 4f,  "golden_sword" to 4f,
+        "netherite_axe"   to 10f, "diamond_axe"  to 9f,   "iron_axe" to 9f,
+        "stone_axe"       to 9f,  "wooden_axe"   to 7f,   "golden_axe" to 7f,
+        "mace"            to 6f,  "trident"      to 9f,
+        "netherite_pickaxe" to 6f, "diamond_pickaxe" to 5f, "iron_pickaxe" to 4f,
+        "stone_pickaxe"   to 3f,  "wooden_pickaxe"  to 2f, "golden_pickaxe" to 2f
+    )
+
+    private fun bestWeaponSlot(): Int {
+        var best = -1
+        var bestDmg = 0f
+        for (slot in 0..8) {
+            val item = EntityTracker.getInventoryItem(slot) ?: continue
+            if (item.count <= 0) continue
+            val id = InventoryUtil.resolveIdentifier(item)
+                ?.removePrefix("minecraft:") ?: continue
+            val dmg = WEAPON_DAMAGE[id] ?: continue
+            if (dmg > bestDmg) { bestDmg = dmg; best = slot }
+        }
+        return best
+    }
+
     // ── Quantum prediction ──────────────────────────────────
     private fun predictWithQuantum(target: EntityTracker.TrackedEntity, currentPos: Vector3f): Vector3f {
         if (!quantum.value || lastQuantumTarget != target) {
@@ -190,11 +258,10 @@ class KillAura : BaseModule(
         }
 
         return when (quantumAlgo.value) {
-            0 -> predictDynamic(currentPos)
-            1 -> predictAdvancedVelocity(currentPos)
-            2 -> predictPatternBased(currentPos)
-            3 -> predictNeural(currentPos)
-            else -> currentPos
+            QuantumAlgo.DYNAMIC  -> predictDynamic(currentPos)
+            QuantumAlgo.VELOCITY -> predictAdvancedVelocity(currentPos)
+            QuantumAlgo.PATTERN  -> predictPatternBased(currentPos)
+            QuantumAlgo.NEURAL   -> predictNeural(currentPos)
         }
     }
 
@@ -303,7 +370,7 @@ class KillAura : BaseModule(
         return currentPos.add(offset)
     }
 
-    // ── KillAura3 rotation (normal mode) ──────────────────
+    // ── AIM rotation (Quantum-assisted point aiming) ───────
     private fun calculateRotationKillAura3(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
         var aimPos = Vector3f.from(target.x, target.y, target.z)
         aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
@@ -317,16 +384,7 @@ class KillAura : BaseModule(
         }
 
         val rot = RotationUtil.toPoint(aimPos.x, aimPos.y, aimPos.z)
-        var yaw = rot.yaw
-        val pitch = rot.pitch
-
-        if (rotMode.value == 2) {
-            strafeAngle = (strafeAngle + 5f) % 360f
-            val rad = Math.toRadians(strafeAngle.toDouble()).toFloat()
-            yaw += sin(rad) * 5f
-        }
-
-        rotAngle = Pair(pitch, yaw)
+        rotAngle = Pair(rot.pitch, rot.yaw)
         shouldRot = true
     }
 
@@ -375,40 +433,74 @@ class KillAura : BaseModule(
         shouldRot = true
     }
 
-    // ── Target Lock: yaw glued to the target plus a persistent spin offset.
-    //    No strafe input  -> the rotation stands still, still pinned on the
-    //    target at the same offset. Strafe input -> circles around the target
-    //    at "Lock Distance" deg/sec. The offset only ever moves forward and
-    //    NEVER snaps back, so once you start circling you can't back out of
-    //    the circle (only a target switch or module restart re-centers it). ──
-    private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        // Where the target actually is right now (Apolon CalcPlayerAngle style yaw)
-        val dx = target.x - EntityTracker.selfX
-        val dz = target.z - EntityTracker.selfZ
-        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
-
+    // ── Target Lock: REAL movement circling, not a yaw gimmick.
+    //
+    //    Geometry (owner's circle diagram): you are a dot on a circle, the
+    //    target is the center.
+    //      • LEFT strafe held  -> you walk the circle counter-clockwise
+    //      • RIGHT strafe held -> clockwise
+    //      • neither held      -> you simply stop circling, rotation pinned
+    //      • forward input     -> radius shrinks smoothly (spiral in),
+    //        but NEVER past 2 blocks — no face-hug spinning
+    //      • backward input    -> radius grows back out (up to Lock slider)
+    //
+    //    Server-side this is ordinary movement (the position inside your own
+    //    PlayerAuthInputPacket is rewritten); each step is mirrored back to
+    //    the client via a forced MovePlayerPacket so the game renders the
+    //    circle instead of rubber-banding. No world data on the wire -> the
+    //    circle is naive geometry and does not path around walls. ──
+    private fun applyTargetLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket, session: RubidiumRelaySession) {
         val nowMs = System.currentTimeMillis()
         if (lastLockTarget != target || lockLastTickMs <= 0L) {
-            // Fresh lock: start dead-on the target
-            spinOffset     = 0f
             lastLockTarget = target
             lockLastTickMs = nowMs
+            lockRadius = 0f
+        }
+        if (lockRadius <= 0f) lockRadius = lockDistance.value.coerceAtLeast(MIN_LOCK_RADIUS)
+
+        val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
+
+        // Radial breathing (analog stick forward/back comes through the
+        // packet's motion vector, untouched by any rotation module).
+        val radiusMin = minOf(MIN_LOCK_RADIUS, lockDistance.value)
+        val fwdIn = pkt.motion.y
+        when {
+            fwdIn > 0.25f  -> lockRadius = (lockRadius - lockSpeed.value * 0.5f * dt).coerceAtLeast(radiusMin)
+            fwdIn < -0.25f -> lockRadius = (lockRadius + lockSpeed.value * 0.5f * dt).coerceAtMost(lockDistance.value.coerceAtLeast(radiusMin))
         }
 
         var spinDir = 0f
-        if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) spinDir = -1f
-        else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = 1f
+        if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) spinDir = 1f
+        else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = -1f
 
         if (spinDir != 0f) {
-            // Steady circling scaled by elapsed time between packets
-            val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
-            spinOffset = wrapYaw(spinOffset + spinDir * lockDistance.value * dt)
+            val step = (lockSpeed.value / lockRadius) * dt
+
+            val angle = atan2(EntityTracker.selfZ - target.z, EntityTracker.selfX - target.x)
+            val nextAngle = angle + spinDir * step
+            val nx = target.x + lockRadius * cos(nextAngle)
+            val nz = target.z + lockRadius * sin(nextAngle)
+            val ny = pkt.position.y
+
+            pkt.position = Vector3f.from(nx, ny, nz)
+            EntityTracker.selfX = nx
+            EntityTracker.selfY = ny
+            EntityTracker.selfZ = nz
+            PacketUtil.sendMove(
+                session, nx, ny, nz,
+                EntityTracker.selfYaw, EntityTracker.selfPitch,
+                onGround = true, teleport = true, mirrorToClient = true
+            )
         }
 
         lockLastTickMs = nowMs
 
-        // Real pitch; yaw = target + offset -> always on the circle, never out.
-        rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw + spinOffset))
+        // Rotation glued to the target from wherever we stand now (Apolon
+        // CalcPlayerAngle style yaw), real pitch — same contract as before.
+        val dx = target.x - EntityTracker.selfX
+        val dz = target.z - EntityTracker.selfZ
+        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+        rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw))
         shouldRot = true
     }
 
@@ -439,7 +531,7 @@ class KillAura : BaseModule(
         val nowMs = System.currentTimeMillis()
 
         val target = when (targetMode.value) {
-            0 -> {
+            TargetMode.SINGLE -> {
                 if (currentTarget == null || !cachedTargets.contains(currentTarget)) {
                     currentTarget = cachedTargets.firstOrNull()
                     positionHistory.clear()
@@ -448,7 +540,7 @@ class KillAura : BaseModule(
                 }
                 currentTarget
             }
-            1 -> {
+            TargetMode.SWITCH -> {
                 if (nowMs - lastSwitchMs >= switchDelay.value) {
                     switchIndex = (switchIndex + 1) % cachedTargets.size
                     currentTarget = cachedTargets[switchIndex]
@@ -459,7 +551,7 @@ class KillAura : BaseModule(
                 }
                 currentTarget
             }
-            else -> null
+            TargetMode.MULTI -> null
         }
 
         val primary = target ?: cachedTargets.firstOrNull()
@@ -468,13 +560,14 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Rotation (0=None, 1=Normal, 2=Strafe, 3=Random, 4=Target Lock) ────
+        // ── Rotation ──────────────────────────────────────
         when (rotMode.value) {
-            3    -> applyRandomRotation(primary)
-            4    -> applyTargetLock(primary, pkt)
-            else -> calculateRotationKillAura3(primary, pkt)
+            RotationMode.RANDOM      -> applyRandomRotation(primary)
+            RotationMode.TARGET_LOCK -> applyTargetLock(primary, pkt, session)
+            RotationMode.NONE,
+            RotationMode.AIM         -> calculateRotationKillAura3(primary, pkt)
         }
-        if (shouldRot && rotMode.value != 0) {
+        if (shouldRot && rotMode.value != RotationMode.NONE) {
             val (pitch, yaw) = rotAngle
             pkt.rotation = Vector3f.from(pitch, yaw, yaw)
             if (!silentRot.value) {
@@ -485,8 +578,8 @@ class KillAura : BaseModule(
 
         // ── Attack timing ──────────────────────────────────
         val attackDelayNs = when (attackMode.value) {
-            0 -> 1_000_000_000L / cps.value
-            else -> intervalTicks.value * 50_000_000L
+            AttackMode.CPS      -> 1_000_000_000L / cps.value
+            AttackMode.INTERVAL -> intervalTicks.value * 50_000_000L
         }
         if (nowNs - lastAttackNs < attackDelayNs) {
             event.cancelAndReplace(pkt)
@@ -494,8 +587,8 @@ class KillAura : BaseModule(
         }
 
         val targetsToHit = when (targetMode.value) {
-            0, 1 -> listOfNotNull(primary)
-            else -> cachedTargets
+            TargetMode.SINGLE, TargetMode.SWITCH -> listOfNotNull(primary)
+            TargetMode.MULTI -> cachedTargets
         }
 
         val sx = EntityTracker.selfX
@@ -510,26 +603,49 @@ class KillAura : BaseModule(
             return
         }
 
-        val slot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
+        // ── Hurttime check (Melody): skip targets still inside their
+        //    hurt-invulnerability window (~0.5 s) — the server discards hits
+        //    there anyway, swinging only wastes CPS budget and looks blatant. ──
+        val swingTargets = if (hurtTimeCheck.value) {
+            inRange.filterNot { EntityTracker.wasRecentlyHurt(it.runtimeId, 500L) }
+        } else inRange
+        if (swingTargets.isEmpty()) {
+            event.cancelAndReplace(pkt)
+            return
+        }
+
+        // ── Weapon switch (Melody): equip the best hotbar weapon for the
+        //    wave. SILENT wraps the whole wave in a MobEquipmentPacket
+        //    sandwich (switch → hit → switch back) that is invisible on the
+        //    client HUD; FULL leaves the best weapon equipped. ──
+        val realSlot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
+        val bestSlot = if (weaponSwitch.value == WeaponSwitchMode.NONE) realSlot
+                       else bestWeaponSlot().takeIf { it in 0..8 } ?: realSlot
+        val switched = weaponSwitch.value != WeaponSwitchMode.NONE && bestSlot != realSlot
+        if (switched) InventoryUtil.sendHotbarSelect(session, bestSlot)
+
         val attacksPerHit = hitAttempts.value
-        val packetCount = boost.value
+        val packetCount   = boost.value
 
         repeat(attacksPerHit) {
-            inRange.forEach { targetEntity ->
+            swingTargets.forEach { targetEntity ->
                 if (Random.nextInt(100) < hitChance.value) {
+                    val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
                     if (packetAttack.value) {
                         repeat(packetCount) {
                             PacketUtil.sendSwing(session)
-                            val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
-                            PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
+                            PacketUtil.sendAttack(session, targetEntity.runtimeId, bestSlot, clickPos)
                         }
                     } else {
                         PacketUtil.sendSwing(session)
-                        val clickPos = Vector3f.from(targetEntity.x, targetEntity.y + 1.5f, targetEntity.z)
-                        PacketUtil.sendAttack(session, targetEntity.runtimeId, slot, clickPos)
+                        PacketUtil.sendAttack(session, targetEntity.runtimeId, bestSlot, clickPos)
                     }
                 }
             }
+        }
+
+        if (switched && weaponSwitch.value == WeaponSwitchMode.SILENT) {
+            InventoryUtil.sendHotbarSelect(session, realSlot)
         }
 
         lastAttackNs = nowNs
