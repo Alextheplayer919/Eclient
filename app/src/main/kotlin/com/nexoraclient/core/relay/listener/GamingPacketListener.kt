@@ -84,7 +84,7 @@ class GamingPacketListener : RubidiumPacketListener {
             is CommandRequestPacket      -> { }
             is TextPacket                -> { }
             is AnimatePacket             -> { }
-            is DisconnectPacket          -> { DiagLog.log(TAG, "client-end disconnect: ${packet.message}") }
+            is DisconnectPacket          -> { DiagLog.log(TAG, "client-end disconnect: reason=${packet.reason} kick='${packet.kickMessage}'") }
         }
         return true
     }
@@ -127,7 +127,7 @@ class GamingPacketListener : RubidiumPacketListener {
             is PlayerListPacket       -> { }
             is ChangeDimensionPacket  -> { }
             is TextPacket             -> { }
-            is DisconnectPacket       -> { DiagLog.log(TAG, "SERVER KICK: message='${packet.message}'") }
+            is DisconnectPacket       -> { DiagLog.log(TAG, "SERVER KICK: reason=${packet.reason} kick='${packet.kickMessage}'") }
 
             is TransferPacket -> {
                 val newHost = packet.address
