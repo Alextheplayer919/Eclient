@@ -7,6 +7,7 @@ import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.utils.BlockTracker
 import com.rubidiumclient.utils.ChunkParser
 import com.rubidiumclient.utils.WorldBlockTracker
+import com.rubidiumclient.utils.DiagLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -83,7 +84,7 @@ class GamingPacketListener : RubidiumPacketListener {
             is CommandRequestPacket      -> { }
             is TextPacket                -> { }
             is AnimatePacket             -> { }
-            is DisconnectPacket          -> { }
+            is DisconnectPacket          -> { DiagLog.log(TAG, "client-end disconnect: ${packet.message}") }
         }
         return true
     }
@@ -126,7 +127,7 @@ class GamingPacketListener : RubidiumPacketListener {
             is PlayerListPacket       -> { }
             is ChangeDimensionPacket  -> { }
             is TextPacket             -> { }
-            is DisconnectPacket       -> { }
+            is DisconnectPacket       -> { DiagLog.log(TAG, "SERVER KICK: message='${packet.message}'") }
 
             is TransferPacket -> {
                 val newHost = packet.address
