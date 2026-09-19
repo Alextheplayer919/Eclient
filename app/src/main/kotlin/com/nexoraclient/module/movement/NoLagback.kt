@@ -1,65 +1,126 @@
 package com.rubidiumclient.module.movement
 
+import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.MovementCompliance
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
+import com.rubidiumclient.utils.PacketUtil
 import org.cloudburstmc.protocol.bedrock.packet.CorrectPlayerMovePredictionPacket
 import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket
+import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
+
+private enum class NoLagMode { ADAPTIVE, SILENT }
 
 /**
- * NoLagback — EXPERIMENTAL, built for anarchy servers.
+ * NoLagback v2 — research-driven, replaces the naive "swallow correction
+ * packet" approach.
  *
- * Bedrock rubber-banding works like this: the server disagrees with where
- * your movement put you, ships a correction packet (CorrectPlayerMovePrediction
- * for prediction mismatches, MovePlayer RESET for hard teleports back), and
- * the GAME client snaps you back obediently. This module simply never lets
- * those packets reach the game — from the client's perspective the correction
- * never happened, so fly keeps going.
+ * Why v1 was weak: dropping CorrectPlayerMovePredictionPacket only hides the
+ * snap from YOUR eyes. The server's authoritative model is unaffected, each
+ * subsequent AuthInput mismatches harder, and (vanilla BDS defaults:
+ * distance>0.3 blocks, score>20, sustained 500ms) the anomaly budget burns
+ * until action. Desync doesn't fool the server, it tattles louder.
  *
- * Cost of the lie: the server still knows where it thinks you are. Servers
- * that escalate (anticheat "moved too quickly" kicks, watchdog bans) keep
- * escalating — this hides the *visual snap*, not the *server's opinion*.
- * That's why it's a MOVEMENT experiment for anarchy, not a default-on feature.
+ * v2 ADAPTIVE instead runs a compliance governor (core/proxy/MovementCompliance):
+ *   • every correction ANCHORS a "server belief" and raises pressure;
+ *   • MotionFly reads pressure+drift and SHRINKS its speed before the next
+ *     anomaly window instead of after an accumulation — right after a snap,
+ *     speed collapses so the re-drift takes many ticks, letting the score
+ *     mechanic decay instead of ticking up;
+ *   • Smart Resync: when drift exceeds a hard budget OR corrections come
+ *     faster than 3/s, we perform ONE deliberate tiny rubber-band of our own
+ *     (mirror the belief straight into the game). Costs you a sub-block snap,
+ *     buys a full drift reset — replacing the spiraling anonymous-lagback
+ *     loop with rare controlled ones.
  *
- * Drop Corrections (default on)  — filters prediction-mismatch packets. This
- *    is the common source of fly stutter/lagback on anarchy.
- * Drop Resets (default off)      — also swallows hard MovePlayer RESET
- *    teleports. More invasive: real teleports (death respawns, /tp,
- *    dimension changes) ALSO ride RESET-bearing packets in some flows, so
- *    leave this off unless flying legit teleports start feeling broken in
- *    the OPPOSITE direction.
+ * SILENT mode keeps the v1 behavior (drop corrections, never comply) — for
+ * comparison testing or servers with no movement enforcement at all.
+ *
+ * Limits, stated plainly: a trajectory that is *illegal* (hovering without
+ * fly permission, sprint-jump-impossible speeds) cannot be fully invisible
+ * to a movement-validating server, ever. Governor minimizes flag pressure
+ * and flag RATE; it cannot turn "66 m/s" into "sprint".
  */
 class NoLagback : BaseModule(
     name        = "NoLagback",
     category    = ModuleCategory.MOVEMENT,
-    description = "Experimental: never let server correction packets rubber-band you (anarchy fly)"
+    description = "Adaptive anti-lagback: governor throttles fly under correction pressure, smart micro-resyncs reset drift"
 ) {
 
-    private val dropCorrections = bool("Drop Corrections", true)
-    private val dropResets      = bool("Drop Resets",      false)
+    private val mode            = enum("Mode", NoLagMode.ADAPTIVE)
+    private val smartResync     = bool("Smart Resync",   true)
+    private val resyncDistance  = float("Resync Distance", 1.2f, 0.3f, 5f)
+    private val dropResets      = bool("Drop Resets",      false) // SILENT only
+    private val dropCorrection  = bool("Drop Corrections", true)  // SILENT only
+
+    private var lastResyncMs = 0L
 
     override fun onEnable() {
         super.onEnable()
+        MovementCompliance.adaptive = (mode.value == NoLagMode.ADAPTIVE)
         PacketEventBus.register(this)
     }
 
     override fun onDisable() {
+        MovementCompliance.adaptive = false
         PacketEventBus.unregister(this)
         super.onDisable()
     }
 
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
-        if (!event.isServerToClient) return
-        when (val p = event.packet) {
-            is CorrectPlayerMovePredictionPacket ->
-                if (dropCorrections.value) event.cancel()
-            is MovePlayerPacket ->
-                // Cloudburst names wire-mode 1 'RESPAWN'; it's the same mode
-                // the server uses for hard position-RESET corrections.
-                if (dropResets.value && p.mode == MovePlayerPacket.Mode.RESPAWN) event.cancel()
-            else -> { }
+
+        if (event.isServerToClient) {
+            when (val p = event.packet) {
+                is CorrectPlayerMovePredictionPacket -> {
+                    MovementCompliance.noteCorrection(p.position.x, p.position.y, p.position.z)
+                    if (mode.value == NoLagMode.SILENT && dropCorrection.value) event.cancel()
+                }
+                is MovePlayerPacket -> {
+                    if (p.runtimeEntityId == EntityTracker.selfRuntimeId) {
+                        when (p.mode) {
+                            MovePlayerPacket.Mode.TELEPORT ->
+                                MovementCompliance.noteServerTeleport(p.position.x, p.position.y, p.position.z)
+                            MovePlayerPacket.Mode.RESPAWN -> { // Cloudburst's name for wire-RESET corrections
+                                MovementCompliance.noteCorrection(p.position.x, p.position.y, p.position.z)
+                                if (mode.value == NoLagMode.SILENT && dropResets.value) event.cancel()
+                            }
+                            else -> { }
+                        }
+                    }
+                }
+                else -> { }
+            }
+            return
+        }
+
+        // Every outgoing AuthInput = our timing tick for smart resync.
+        val pkt = event.packet as? PlayerAuthInputPacket ?: return
+        if (mode.value != NoLagMode.ADAPTIVE || !smartResync.value) return
+
+        val session = event.session
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastResyncMs < 1500L) return
+        if (!MovementCompliance.beliefFresh) return
+
+        val drift = MovementCompliance.discrepancy()
+        val storming = MovementCompliance.correctionsInLast(1000) >= 3
+        if (drift > resyncDistance.value || storming) {
+            // Deliberate micro rubber-band of OUR choosing: snap the game to
+            // the server's anchored position, zero the drift ledger.
+            PacketUtil.sendMove(
+                session,
+                MovementCompliance.beliefX, MovementCompliance.beliefY, MovementCompliance.beliefZ,
+                EntityTracker.selfYaw, EntityTracker.selfPitch,
+                onGround = true, teleport = true, mirrorToClient = true
+            )
+            EntityTracker.selfX = MovementCompliance.beliefX
+            EntityTracker.selfY = MovementCompliance.beliefY
+            EntityTracker.selfZ = MovementCompliance.beliefZ
+            MovementCompliance.noteLocalResync()
+            lastResyncMs = nowMs
         }
     }
 }

@@ -1,6 +1,7 @@
 package com.rubidiumclient.module.movement
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.MovementCompliance
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
@@ -83,10 +84,29 @@ class MotionFly : BaseModule(
         if (wantDown) horizSpeed *= downHFactor.value
 
         // ── Vertical speed ──────────────────────────
-        val vertSpeed = when {
+        var vertSpeed = when {
             wantUp -> upSpeedBPS.value / 20f
             wantDown -> -downSpeedBPS.value / 20f + glide.value
             else -> glide.value
+        }
+
+        // ── Compliance governor (NoLagback ADAPTIVE) ──────────
+        // Two signals, same goal: never give the server another anomaly
+        // window for free. Pressure = correction-history multiplier; drift =
+        // live distance from the server's believed position. Right after a
+        // correction, positive Y is suspended too (hovering is the single
+        // most correction-provoking state there is).
+        if (MovementCompliance.adaptive) {
+            var scale = MovementCompliance.pressure()
+            val drift = MovementCompliance.discrepancy()
+            if (drift >= 0f) {
+                scale *= (0.30f / (0.30f + drift))            // 0 drift -> 1.0, 0.3 -> 0.5, 1.2 -> 0.2
+            }
+            horizSpeed *= scale
+            // settle window: 600ms post-correction, vertical is capped to glide
+            if (MovementCompliance.ageOfLastCorrectionMs() < 600L && vertSpeed > glide.value) {
+                vertSpeed = glide.value
+            }
         }
 
         // ── Input rotation ──────────────────────────
