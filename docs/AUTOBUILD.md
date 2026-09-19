@@ -1,12 +1,15 @@
 # Auto-build (block printer) — design & status
 
-Server-authoritative placement printer for the Schematica ghost. **Client-side
-visuals only exist today; the auto-builder itself is not live yet.** This doc
-is the single source of truth for how it will work, what is verified, and
-what must be captured before any placement code ships.
+Server-authoritative placement printer for the Schematica ghost. **Status:
+v1 is LIVE behind the `Auto Build (v1)` toggle in the Schematica module
+(default OFF)** — orientation-free classes only (SIMPLE / AXIS / AUTO_CONNECT),
+one placement per tick, 4.6 reach, verified + circuit-breakered. Phase 2
+(stairs/slabs/trapdoors) is not shipped yet. This doc is the single source of
+truth for how it works, what is verified, and what still needs captures.
 
 Companions: `core/schem/BlockIdMap.kt` (java→bedrock conversion),
 `core/schem/BuildBlocks.kt` (planner: classes, click points, tracking),
+`core/schem/AutoBuilder.kt` (v1 placement engine),
 loader `states` support in `core/schem/SchematicModel.kt`.
 
 Reference build: Modern Office Building Shell (59×68×36, 16,703 blocks,
@@ -39,7 +42,11 @@ and check the target server’s rules first — many ban printers.
 | `InventoryTransactionPacket` ITEM_USE is the alternative placement path | ✅ verified (both real) | Standard bedrock flow; which one a session uses is negotiated (`StartGame`: server-authoritative inventories) — hence dual capture below |
 | Server-authoritative inventory handshake (`ItemStackRequest/Response`) | ✅ verified | `StartGame` advertises; server answers `ItemStackResponsePacket`, rejected requests revert |
 | `MobEquipmentPacket` = slot switch with runtime id + item + slots + windowId | ✅ verified | pmmp/Cloudburst class docs; the tracker (below) is mandatory — the item field must match what the server thinks the slot holds |
-| **Action-type constants for click-block ("0")** | ⚠ corrected | Do **not** trust from memory: PocketMine currently uses different constants across versions and Cloudburst encodes a *legacy action type* whose numbering is version-dependent. Phase 0 captures the real client’s values and the builder replays those byte-shapes verbatim, not documentation |
+| **Action-type constants for item-use transactions** | ✅ verified | `0 = CLICK_BLOCK`, `1 = CLICK_AIR`, `2 = BREAK_BLOCK` — consistent across sel-utils bedrock protocol references (1.6.0 era through current), sandertv/gophertunnel, and PocketMine-MP `UseItemTransactionData`. Placement sends **0** (click on the support block). Matches the cheat-sheet AND the working combat-aura wire shape |
+| Java serverbound placement (`use_item_on`) | ✅ verified | minecraft.wiki Java protocol: Hand enum (0 main / 1 off), Location Position, Face varint (`0=down…5=east`), Cursor Position X/Y/Z floats **0..1 in-block relative**, Inside Block bool, World Border Hit bool (1.21+), Sequence varint (server echoes it in Acknowledge Block Change). Same click-point model as Bedrock — the planner's `clickPoint` triples are valid for both editions |
+| `PlayerAuthInputFlags` bit numbers | ✅ verified (independent) | PocketMine-MP `PlayerAuthInputFlags.php`: `PERFORM_ITEM_INTERACTION = 34`, `PERFORM_BLOCK_ACTIONS = 35`, `PERFORM_ITEM_STACK_REQUEST = 36` — matches the Cloudburst ordinal enumeration and the cheat-sheet numbers |
+| `InventoryTransactionPacket` still legitimate on modern versions | ✅ verified | minecraft.wiki Bedrock protocol + PMMP 4.18 changelog: since 1.16 `ItemStackRequest` replaces it **only for inventory-internal actions** (move/craft/drop flows); ITx ITEM_USE remains the client path for *placing blocks / using items / interacting with entities*. PMMP also accepts the same transaction embedded in `PlayerAuthInputPacket` (flag 34) — both shapes accepted server-side |
+| Item-in-hand `netId` inside placement transactions | ⚠ observed quirk (Geyser) | Geyser PR #3083: the vanilla client sends **netId = 0** in `InventoryTransactionPacket` (not the server-assigned stack id). Auras work today sending the tracked netId; if a strict server rejects placements, mirror vanilla with `itemInHand.toBuilder().netId(0).usingNetId(false)` |
 | Bedrock state-key names in `BlockMapper.matches` (`pillar_axis`, `minecraft:vertical_half`, `upside_down_bit`) | ⚠ not yet verified | Confirmed from captured `UpdateBlock` data during Phase 0, then filled in |
 | Java id set size | ✅ 1,168 ids | minecraft-data `data/pc/26.1` |
 | Edition difference list in `BlockIdMap` | ✅ data-driven | Curated against GeyserMC’s live mapping (`blocks.nbt` — what their translator physically sends to Bedrock clients), not recollection |
