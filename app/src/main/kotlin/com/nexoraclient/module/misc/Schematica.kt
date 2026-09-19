@@ -4,6 +4,7 @@ import com.rubidiumclient.RubidiumClientApp
 import com.rubidiumclient.core.proxy.CollisionGuard
 import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.core.relay.RubidiumRelaySession
+import com.rubidiumclient.core.schem.AutoBuilder
 import com.rubidiumclient.core.schem.SchematicLoader
 import com.rubidiumclient.core.schem.DebugDrawerBoxes
 import com.rubidiumclient.core.schem.SchematicModel
@@ -54,7 +55,7 @@ private enum class Marker(val identifier: String) {
 class Schematica : BaseModule(
     name        = "Schematica",
     category    = ModuleCategory.MISC,
-    description = "Ghost-build renderer: particle hologram of .mcstructure/.schem files (client-side visuals only)"
+    description = "Schematic ghost renderer + Auto Build v1 (orientation-free blocks, reach 4.6) for .mcstructure/.schem files"
 ) {
 
     private val fileName   = string("File (blank = newest)", "")
@@ -66,6 +67,16 @@ class Schematica : BaseModule(
     private val nudgeX     = int("Nudge X", 0, -64, 64)
     private val nudgeY     = int("Nudge Y", 0, -64, 64)
     private val nudgeZ     = int("Nudge Z", 0, -64, 64)
+
+    // ── Auto Build (v1 — orientation-free classes only) ────────────────────
+    // Places SIMPLE / AXIS(y) / AUTO_CONNECT blocks bottom-up, one per tick,
+    // only within 4.6 blocks of the player. Stairs/slabs/trapdoors/torches/
+    // plants stay manual until Phase 2 (see docs/AUTOBUILD.md). The engine is
+    // circuit-breaker protected (3 consecutive failures stop it) and every
+    // placement is verified against world state on the following ticks.
+    private val autoBuild  = bool("Auto Build (v1)", false)
+    private val abDelay    = int("Auto Build tick ms", 120, 40, 500)
+    @Volatile private var autoBuilder: AutoBuilder? = null
 
     @Volatile private var model: SchematicModel? = null
     @Volatile private var exposed: IntArray = IntArray(0)
@@ -85,6 +96,12 @@ class Schematica : BaseModule(
         originZ = floor(EntityTracker.selfZ).toInt() + nudgeZ.value
         loadAsync()
         launchTickLoop(respawnMs.value.toLong()) { repaint() }
+        if (autoBuild.value) {
+            announce("§e[Schematica]§r Auto Build v1 enabled — orientation-free blocks only " +
+                "(SIMPLE/AXIS/AUTO_CONNECT), reach 4.6, one block per ${abDelay.value} ms. " +
+                "Stairs/slabs/trapdoors/torches/plants remain manual until Phase 2.")
+            launchTickLoop(abDelay.value.toLong()) { autoBuildTick() }
+        }
     }
 
     override fun onDisable() {
@@ -95,6 +112,8 @@ class Schematica : BaseModule(
         }
         model = null
         exposed = IntArray(0)
+        autoBuilder?.stop()
+        autoBuilder = null
         super.onDisable()
     }
 
@@ -103,6 +122,18 @@ class Schematica : BaseModule(
         if (event.direction == PacketEvent.Direction.CLIENT_TO_SERVER) {
             lastSession = event.session
         }
+    }
+
+    // ── Auto Build driver ─────────────────────────────────────────────────
+
+    private fun autoBuildTick() {
+        val session = lastSession ?: return
+        val m = model ?: return
+        val b = autoBuilder ?: AutoBuilder { msg -> announce(msg) }.also {
+            autoBuilder = it
+            it.start(m, originX, originY, originZ)
+        }
+        b.tick(session)
     }
 
     // ── loading ──────────────────────────────────────────────────────────
