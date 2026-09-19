@@ -53,6 +53,7 @@ class NoLagback : BaseModule(
     private val mode            = enum("Mode", NoLagMode.ADAPTIVE)
     private val smartResync     = bool("Smart Resync",   true)
     private val resyncDistance  = float("Resync Distance", 1.2f, 0.3f, 5f)
+    private val climbBudget     = float("Climb Budget BPS", 4f, 0f, 10f) // 0 = guard off
     private val dropResets      = bool("Drop Resets",      false) // SILENT only
     private val dropCorrection  = bool("Drop Corrections", true)  // SILENT only
 
@@ -103,6 +104,7 @@ class NoLagback : BaseModule(
 
         // Every outgoing AuthInput = our timing tick for smart resync.
         val pkt = event.packet as? PlayerAuthInputPacket ?: return
+        MovementCompliance.climbBudgetBps = climbBudget.value
         if (mode.value != NoLagMode.ADAPTIVE || !smartResync.value) return
 
         val session = event.session

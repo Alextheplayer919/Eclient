@@ -191,7 +191,10 @@ object MovementCompliance {
     // invert to a controlled sink. You keep horizontal speed and short
     // climbs; what disappears is the "climbed 30 blocks in 4 s" signature.
     private const val CLIMB_WINDOW_MS = 1000L
-    private const val CLIMB_BUDGET_BPS = 2.0f   // blocks/sec sustained net climb
+
+    /** Sustained net-climb budget in blocks/sec; 0 or less disables the
+     *  guard entirely. Set by NoLagback's Climb Budget slider. */
+    @Volatile var climbBudgetBps = 4.0f
     private val climbSamples = ArrayDeque<Pair<Long, Float>>()
 
     private fun pushClimbSample() {
@@ -215,12 +218,15 @@ object MovementCompliance {
         if (!adaptive) return base
         pushClimbSample()
         if (base <= 0f) return base
+        if (climbBudgetBps <= 0f) return base      // guard disabled by slider
         val oldest: Pair<Long, Float>? = synchronized(climbSamples) { climbSamples.peekFirst() }
         if (oldest == null) return base
         val dt = (nowMs() - oldest.first) / 1000f
         if (dt < 0.2f) return base
         val rate = (EntityTracker.selfY - oldest.second) / dt
-        return if (rate > CLIMB_BUDGET_BPS) -0.5f else base
+        // Budget exceeded: clamp the climb (0 = stop ascending, NOT an active
+        // sink — the earlier sink inversion felt like a server rubber-band).
+        return if (rate > climbBudgetBps) 0f else base
     }
 
     private fun trimOld() {
