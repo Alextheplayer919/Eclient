@@ -7,6 +7,13 @@ one placement per tick, 4.6 reach, verified + circuit-breakered. Phase 2
 (stairs/slabs/trapdoors) is not shipped yet. This doc is the single source of
 truth for how it works, what is verified, and what still needs captures.
 
+**Field-validated (2026-09-19):** user ran Auto Build v1 on a real server and
+completed a hut with zero placement issues — confirms the reused combat-aura
+ITEM_USE wire shape (ITx `actionType=0 CLICK_BLOCK`, consumption action
+record, in-block-relative click position), the bottom-up build order under the
+no-support-miss tolerance, world-state verification, and the circuit-breaker
+safety stack end-to-end.
+
 Companions: `core/schem/BlockIdMap.kt` (java→bedrock conversion),
 `core/schem/BuildBlocks.kt` (planner: classes, click points, tracking),
 `core/schem/AutoBuilder.kt` (v1 placement engine),
