@@ -151,7 +151,7 @@ object SchematicLoader {
             ?: throw LoadError("${file.name}: no BlockData")
 
         val paletteArr = arrayOfNulls<String>(paletteTag.size + 1)
-        for (k in paletteTag.keySet()) {
+        for (k in paletteTag.keys) {
             val v = (paletteTag.get(k) as? Int) ?: continue
             if (v in paletteArr.indices) paletteArr[v] = k
         }
