@@ -34,7 +34,7 @@ is shown at the bottom of the tab.
 | Setting | Meaning |
 |---|---|
 | File (blank = newest) | Filename in the schematics folder |
-| Render Style | **WIREFRAME** (crisp blue boxes, DebugDrawer overlay) / PARTICLES / BOTH |
+| Render Style | **PARTICLES** (required on current builds) / WIREFRAME / BOTH — wireframe choices gracefully fall back to particles with a one-time chat notice (see below) |
 | Marker Particle | FLAME / BLUE_FLAME / BALLOON / HEART / NOTE |
 | Layer (0 = all) | Show only one Y layer (1-based) — layer-by-layer building |
 | Max Points | Ghost density cap (50–1500, default 350) — closest blocks win |
@@ -61,7 +61,7 @@ owns the world model (WorldBlockTracker) and can inject clientbound packets.
 | Primitive | Status | Verdict |
 |---|---|---|
 | **Particles** (`SpawnParticleEffect`) | ✅ shipped v1 | Zero-risk dots; faint but safe. |
-| **ClientboundDebugRendererPacket** (Mojang legacy debug overlay: RGBA marker cubes + TTL + CLEAR) | ✅ shipped v2 | Closest thing to real hologram from a proxy: crisp floating cubes, no collision, server sees nothing. Android-safe (primitive fields only). The newer `DebugDrawerPacket` (batched shapes) was rejected — its codec is `java.awt.Color`-bound and java.awt does not exist on Android at all (fails at *compile*, not just runtime). |
+| **ClientboundDebugRendererPacket** (Mojang legacy debug overlay: RGBA marker cubes + TTL + CLEAR) | ❌ removed (kills session) | Was shipped in v2, then **instant-kicked users**: packet ID 164 no longer exists in current retail client builds (verified against the Bedrock packet table, 26.40/26.45 — only `debug_info` + `server_script_debug_drawer` ID 328 remain). The client can't map ID 164 to any handler and tears the session down the moment the first byte arrives; even `CLEAR_DEBUG_MARKERS` hits the same dead ID. Cloudburst's serializer is still registered (it was correct — IntLE type since v671, string, vec3, RGBA floats, int64 LE duration), so the encode side was never the bug. Possible future restoration: hand-encode `ServerScriptDebugDrawer` (ID 328) via `UnknownPacket` — Cloudburst's own class for it (`DebugDrawerPacket`) is `java.awt.Color`-bound and cannot exist on Android at all. |
 | **Falling-block entities** | ❌ rejected (researched) | Bedrock's `falling_block` appearance control from pure packets is buggy/unreliable (bedrock.dev: people fake it with block+entity combos instead). Java display entities don't exist on bedrock. |
 | **Clientbound fake blocks** (`UpdateBlock` injection) | 🧪 future, needs safety gate | Physics-poisons the client's own collision → claim lies → flags. Only viable with a proximity gate (fake blocks far away, downgrade to boxes nearby). Complex bookkeeping: server updates constantly overwrite; must repaint at sub-chunk granularity. |
 | **Native GL hook via attach** | 🔒 blocked on round-3 device experiment | True translucent Schematica-style hologram. Requires `libeclient_attach` Phase A GO to inject rendering into the game process. |

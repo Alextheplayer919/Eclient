@@ -14,8 +14,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.cloudburstmc.math.vector.Vector3f
-import org.cloudburstmc.protocol.bedrock.data.ClientboundDebugRendererType
-import org.cloudburstmc.protocol.bedrock.packet.ClientboundDebugRendererPacket
 import org.cloudburstmc.protocol.bedrock.packet.SpawnParticleEffectPacket
 import org.cloudburstmc.protocol.bedrock.packet.TextPacket
 import java.io.File
@@ -59,7 +57,7 @@ class Schematica : BaseModule(
 ) {
 
     private val fileName   = string("File (blank = newest)", "")
-    private val style      = enum("Render Style", RenderStyle.WIREFRAME)
+    private val style      = enum("Render Style", RenderStyle.PARTICLES)
     private val marker     = enum("Marker Particle", Marker.BLUE_FLAME)
     private val layer      = int("Layer (0 = all)", 0, 0, 256)
     private val maxPoints  = int("Max Points", 350, 50, 1500)
@@ -72,9 +70,11 @@ class Schematica : BaseModule(
     @Volatile private var exposed: IntArray = IntArray(0)
     @Volatile private var originX = 0; @Volatile private var originY = 0; @Volatile private var originZ = 0
     @Volatile private var lastSession: RubidiumRelaySession? = null
+    @Volatile private var wireframeNoticeShown = false
 
     override fun onEnable() {
         super.onEnable()
+        wireframeNoticeShown = false
         model = null
         exposed = IntArray(0)
         originX = floor(EntityTracker.selfX).toInt() + nudgeX.value
@@ -85,7 +85,6 @@ class Schematica : BaseModule(
     }
 
     override fun onDisable() {
-        clearMarkers()
         model = null
         exposed = IntArray(0)
         super.onDisable()
@@ -165,8 +164,21 @@ class Schematica : BaseModule(
         }
 
         val dim = EntityTracker.selfDimension
-        if (style.value != RenderStyle.WIREFRAME) spawnParticles(m, picked, session, dim)
-        if (style.value != RenderStyle.PARTICLES) drawMarkers(m, picked, session, dim)
+        // Wireframe mode is DEAD on current game builds: ClientboundDebugRenderer
+        // (packet ID 164) was dropped from the client's packet table entirely
+        // — the byte stream is valid, the client simply has no handler for the
+        // ID, so it tears the session down the instant the first packet lands
+        // (the reported "instant kick on toggle"). Even CLEAR_DEBUG_MARKERS
+        // hits the same dead ID. WIREFRAME/BOTH now fall back to particles,
+        // with a one-time explanation per enable. Possible future restoration:
+        // the replacement ServerScriptDebugDrawer (ID 328) hand-encoded via
+        // UnknownPacket (Cloudburst's own class for it is java.awt-bound, so
+        // it cannot be used on Android).
+        spawnParticles(m, picked, session, dim)
+        if (style.value != RenderStyle.PARTICLES && !wireframeNoticeShown) {
+            wireframeNoticeShown = true
+            announce("Schematica: Mojang removed the debug-renderer packet from current game builds, so wireframe is no longer possible — drawing with particles instead.")
+        }
     }
 
     private fun spawnParticles(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
@@ -185,42 +197,6 @@ class Schematica : BaseModule(
                 this.molangVariablesJson = java.util.Optional.empty()
             })
         }
-    }
-
-    // Wireframe mode: ClientboundDebugRendererPacket (Mojang's own debug
-    // overlay, "meant for script debugging" — floating marker cubes with RGBA
-    // color + TTL, no collision, server sees nothing). One cube per packet —
-    // chosen over the newer DebugDrawerPacket because that codec class is
-    // java.awt.Color-bound, and java.awt does not exist on Android at all.
-    // Markers self-expire ~0.4s after the last repaint; onDisable also sends
-    // CLEAR_DEBUG_MARKERS for immediate teardown.
-    private fun drawMarkers(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
-        val duration = respawnMs.value.toLong() + 400L
-        for (idx in picked) {
-            val (x, y, z) = m.coordsOf(idx)
-            session.clientBound(ClientboundDebugRendererPacket().apply {
-                debugMarkerType = ClientboundDebugRendererType.ADD_DEBUG_MARKER_CUBE
-                markerText = ""
-                markerPosition = Vector3f.from(
-                    originX + x + 0.5f,
-                    originY + y + 0.5f,
-                    originZ + z + 0.5f
-                )
-                markerColorRed = 0.35f
-                markerColorGreen = 0.85f
-                markerColorBlue = 1.0f
-                markerColorAlpha = 0.85f
-                markerDuration = duration
-            })
-        }
-    }
-
-    private fun clearMarkers() {
-        lastSession?.clientBound(ClientboundDebugRendererPacket().apply {
-            debugMarkerType = ClientboundDebugRendererType.CLEAR_DEBUG_MARKERS
-            markerText = ""
-            markerPosition = Vector3f.from(0f, 0f, 0f)
-        })
     }
 
     private fun announce(message: String) {
