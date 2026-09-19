@@ -301,3 +301,63 @@ what TimerC inspects.
 
 Open questions from §11 stand; E10 joins them. Next engineering step: **P1 hardening batch** (E1/E2/E3/E5
 + comment fixes), then device validation.
+
+---
+
+# ROUND-3 ADDENDUM — collision consistency (user-reported: chorus PLANT impact flags)
+
+Clarification from live feedback: the reported "flag-ish" scenario is **flying fast
+into chorus PLANT / tree-like solid blocks** — a collision-consistency failure, NOT
+a chorus-fruit teleport scenario (user does not use chorus fruit). The teleport-grace
+research is still banked for the P3 classifier (smoothed teleport = 3 correction-exempt
+ticks, ticks 0–2, per oomph reference: `teleportCompletionTicks = 2` when smoothed).
+
+## Shipped (this round, v2-line core feature): CollisionGuard
+
+**Mechanism confirmed by code:** MotionFly/BypassFly move the player by injecting
+`SetEntityMotionPacket` *clientbound* — the real client then resolves collision
+against its own world and claims the resulting position. When injected motion
+demands a path through solid blocks, the client slams to a stop while the
+server-side sim kept racing: divergence **inverts and spikes** → corrections +
+collision-pattern flags.
+
+**Fix:** pre-clamp the injected motion against proxied chunk data so motion
+REQUESTS never demand a path the world forbids (`core/proxy/CollisionGuard.kt`):
+- Vanilla axis-separated response shape (Y→X→Z): blocked axes shrink to the last
+  free sample, free axes pass → wall-slam becomes wall-slide, ceiling-slam becomes
+  hover-stop, floor-slam softens. No new motion signature introduced.
+- Swept-box probes ≤ 0.3 blocks (no tunneling at 2.5 blocks/tick), player box
+  ±0.29 × 1.79 (graze margins absorb the sneaking eye-offset residual).
+- Exact-identifier PENETRABLE whitelist (air/water/lava/fire, grass/fern/seagrass,
+  cobweb, snow_layer, vine, ladder). **chorus_plant and chorus_flower are solid** —
+  they have real collision (the reported case). Everything unlisted = solid.
+- Fail-open: no terrain data or unknown cells → motion untouched. The guard can
+  only REDUCE motion, never add or redirect.
+- Wired: NoLagback setting **"Collision Guard" (default ON)** →
+  `CollisionGuard.enabled`; consumed at the single injection point of MotionFly
+  and BypassFly. NoClip intentionally untouched (phasing is its feature).
+
+## E5 resolved (Y reference frames)
+
+`EntityTracker.selfY` feeds both channels: `handleAuthInput` → **eye frame (+1.62)**,
+`handleMovePlayer` → **feet frame**. In practice each session uses ONE channel
+(V3 → AuthInput/eye; PMMP-flavor → MovePlayer/feet), so no oscillation, but the
+frame differs **by flavor**. Resolved without global blast radius: tracker now
+exposes `selfYFrameIsEye` (set per channel); CollisionGuard normalizes via
+`feetY()`. Global normalization (all consumers) stays deferred — existing module
+semantics unchanged.
+
+## Round-3 web sweep verdict
+
+Bedrock-bypass landscape unchanged: public results are Java-edition noise
+(Vulcan/Grim/YesCheat+) and per-server exploit trivia. No public mechanism beyond
+the governor/compliance class we already run for bedrock. Our line remains SOTA.
+
+## Backlog (future feature exploration)
+
+- Vehicle/entity movement domain (boats, horses, rideables): separate sim paths,
+  legit-fast channels exist (boat-on-ice ≈ 40 bps range). Flag-prevention through
+  legal vehicle physics — distinct research item, not started.
+- Teleport-window classifier constants (3-tick smoothed grace) — banked for P3.
+- 50 bps physics ceiling restated: 2.5 blocks/tick vs ~0.45 legal → trigger
+  crossed in one tick every tick; no wire mechanism changes that arithmetic.

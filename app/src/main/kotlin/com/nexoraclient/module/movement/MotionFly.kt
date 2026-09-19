@@ -1,6 +1,7 @@
 package com.rubidiumclient.module.movement
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.CollisionGuard
 import com.rubidiumclient.core.proxy.MovementCompliance
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
@@ -124,10 +125,17 @@ class MotionFly : BaseModule(
             motionZ = 0f
         }
 
+        // ── Collision consistency: never REQUEST a path the world forbids ──
+        // Wall-slam becomes wall-slide, ceiling-slam becomes hover-stop —
+        // vanilla collision-response shape, no new motion signature.
+        val finalMotion = CollisionGuard.clampedMotion(
+            selfPos.x, CollisionGuard.feetY(), selfPos.z, motionX, vertSpeed, motionZ
+        )
+
         // ── Send motion packet ──────────────────────
         val motionPacket = SetEntityMotionPacket()
         motionPacket.runtimeEntityId = EntityTracker.selfRuntimeId
-        motionPacket.motion = Vector3f.from(motionX, vertSpeed, motionZ)
+        motionPacket.motion = finalMotion
         session.clientBound(motionPacket)
 
         // Update last position to current

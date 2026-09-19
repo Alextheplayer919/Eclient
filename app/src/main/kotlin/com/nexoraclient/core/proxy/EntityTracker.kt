@@ -136,6 +136,11 @@ object EntityTracker : PacketEventBus.PacketListener {
     @Volatile var selfHunger     : Float   = 20f
     @Volatile var selfSaturation : Float   = 5f
     @Volatile var selfOnGround   : Boolean = true
+    /** Y reference frame of selfY: true = eye frame (+1.62, AuthInput channel),
+     *  false = feet frame (MovePlayer/Respawn/StartGame channels). V3 servers
+     *  feed AuthInput only; PMMP-flavor feeds MovePlayer. CollisionGuard
+     *  normalizes via this flag; consumers keep their current semantics. */
+    @Volatile var selfYFrameIsEye: Boolean = false
     @Volatile var selfGameMode   : Int     = 0
     @Volatile var selfDimension  : Int     = 0
     @Volatile var selfSpeedXZ    : Float   = 0f
@@ -368,6 +373,7 @@ private fun handleMovePlayer(p: MovePlayerPacket, dir: PacketEvent.Direction) {
             selfPrevY = selfY
             selfX = p.position.x; selfY = p.position.y; selfZ = p.position.z
             selfYaw = p.rotation.y; selfPitch = p.rotation.x
+            selfYFrameIsEye = false   // MovePlayer.Position is feet frame
             selfOnGround = p.isOnGround
             selfSpeedXZ  = MathUtil.dist2(selfX, selfZ, prevSelfX, prevSelfZ)
         }
@@ -385,8 +391,9 @@ private fun handleAuthInput(p: PlayerAuthInputPacket, dir: PacketEvent.Direction
     prevSelfX = selfX; prevSelfZ = selfZ
     selfPrevY = selfY
     selfX = p.position.x; selfY = p.position.y; selfZ = p.position.z
-    selfYaw = p.rotation.y; selfPitch = p.rotation.x
-    selfSpeedXZ = MathUtil.dist2(selfX, selfZ, prevSelfX, prevSelfZ)
+        selfYaw = p.rotation.y; selfPitch = p.rotation.x
+        selfYFrameIsEye = true   // AuthInput.Position is eye/head frame (+1.62)
+        selfSpeedXZ = MathUtil.dist2(selfX, selfZ, prevSelfX, prevSelfZ)
     if (p.inputData.contains(PlayerAuthInputData.START_SPRINTING)) selfSprinting = true
     if (p.inputData.contains(PlayerAuthInputData.STOP_SPRINTING)) selfSprinting = false
 

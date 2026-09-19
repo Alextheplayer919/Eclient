@@ -1,6 +1,7 @@
 package com.rubidiumclient.module.movement
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.CollisionGuard
 import com.rubidiumclient.core.proxy.MovementCompliance
 import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
@@ -215,13 +216,19 @@ class BypassFly : BaseModule(
         }
 
         // Governor: no upward impulse right after a correction; sustained
-        // climbs past the flag budget invert to a sink (flag prevention).
+        // climbs past the flag budget clamp to hover (flag prevention).
         val motionYFinal = MovementCompliance.governedVertical(
             if (MovementCompliance.shouldSettleVertical() && motionY > 0f) 0f else motionY
         )
+        // Collision consistency: requested motion shrinks to what the world
+        // allows (wall-slide / hover-stop vs slam — vanilla response shape).
+        val finalMotion = CollisionGuard.clampedMotion(
+            EntityTracker.selfX, CollisionGuard.feetY(), EntityTracker.selfZ,
+            motionX, motionYFinal, motionZ
+        )
         val motionPacket = SetEntityMotionPacket().apply {
             runtimeEntityId = EntityTracker.selfRuntimeId
-            motion = Vector3f.from(motionX, motionYFinal, motionZ)
+            motion = finalMotion
         }
         event.session.clientBound(motionPacket)
     }

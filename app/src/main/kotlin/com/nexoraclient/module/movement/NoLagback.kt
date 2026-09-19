@@ -1,6 +1,7 @@
 package com.rubidiumclient.module.movement
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.CollisionGuard
 import com.rubidiumclient.core.proxy.MovementCompliance
 import com.rubidiumclient.config.ServerConfig
 import com.rubidiumclient.events.PacketEvent
@@ -54,6 +55,7 @@ class NoLagback : BaseModule(
     private val smartResync     = bool("Smart Resync",   true)
     private val resyncDistance  = float("Resync Distance", 1.2f, 0.3f, 5f)
     private val climbBudget     = float("Climb Budget BPS", 4f, 0f, 10f) // 0 = guard off
+    private val collisionGuard  = bool("Collision Guard",    true) // world-consistent fly motion (wall-slide, no slams)
     private val dropResets      = bool("Drop Resets",      false) // SILENT only
     private val dropCorrection  = bool("Drop Corrections", true)  // SILENT only
 
@@ -62,6 +64,7 @@ class NoLagback : BaseModule(
     override fun onEnable() {
         super.onEnable()
         MovementCompliance.adaptive = (mode.value == NoLagMode.ADAPTIVE)
+        CollisionGuard.enabled = collisionGuard.value
         MovementCompliance.onSessionStart(
             try { ServerConfig.getHostBlocking() } catch (_: Exception) { "unknown" }
         )
@@ -70,6 +73,7 @@ class NoLagback : BaseModule(
 
     override fun onDisable() {
         MovementCompliance.adaptive = false
+        CollisionGuard.enabled = false
         MovementCompliance.onSessionEnd()
         PacketEventBus.unregister(this)
         super.onDisable()
@@ -105,6 +109,7 @@ class NoLagback : BaseModule(
         // Every outgoing AuthInput = our timing tick for smart resync.
         val pkt = event.packet as? PlayerAuthInputPacket ?: return
         MovementCompliance.climbBudgetBps = climbBudget.value
+        CollisionGuard.enabled = collisionGuard.value
         if (mode.value != NoLagMode.ADAPTIVE || !smartResync.value) return
 
         val session = event.session
