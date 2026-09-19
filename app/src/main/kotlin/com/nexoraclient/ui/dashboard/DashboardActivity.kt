@@ -1,6 +1,10 @@
 package com.rubidiumclient.ui.dashboard
 
 import android.content.Context
+import com.rubidiumclient.core.schem.SchematicLoader
+import com.rubidiumclient.module.ModuleManager
+import com.rubidiumclient.module.ModuleSetting
+import java.io.File
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -9,6 +13,7 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -176,7 +181,7 @@ private suspend fun activeHeartbeatLoop() {
     }
 }
 
-private enum class DashTab { RELAY, CONFIG, ACCOUNTS, SETTINGS }
+private enum class DashTab { RELAY, CONFIG, SCHEMATICS, ACCOUNTS, SETTINGS }
 
 class DashboardActivity : ComponentActivity() {
 
@@ -422,6 +427,7 @@ fun DashboardScreen(
                             onAddAccount     = { showSignIn = true }
                         )
                         DashTab.CONFIG -> ConfigTab()
+                        DashTab.SCHEMATICS -> SchematicsTab()
                         DashTab.SETTINGS -> SettingsTab()
                     }
                 }
@@ -1161,6 +1167,191 @@ private fun ConfigTab() {
 }
 
 @Composable
+private fun SchematicsTab() {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    var files by remember { mutableStateOf<List<File>>(emptyList()) }
+    var dirPath by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("") }
+    val settingName = "File (blank = newest)"
+
+    fun readSelected(): String = runCatching {
+        @Suppress("UNCHECKED_CAST")
+        (ModuleManager.getAll().firstOrNull { it.name == "Schematica" }
+            ?.getSetting(settingName) as? ModuleSetting<String>)?.value ?: ""
+    }.getOrDefault("")
+
+    var selected by remember { mutableStateOf("") }
+
+    fun select(name: String) {
+        runCatching {
+            @Suppress("UNCHECKED_CAST")
+            (ModuleManager.getAll().firstOrNull { it.name == "Schematica" }
+                ?.getSetting(settingName) as? ModuleSetting<String>)?.value = name
+        }
+        selected = name
+        status = if (name.isBlank()) "Auto (newest) selected — re-toggle Schematica to apply"
+                 else "Selected $name — re-toggle Schematica to apply"
+    }
+
+    fun refresh() {
+        val dir = SchematicLoader.resolveDir(context)
+        dirPath = dir.absolutePath
+        files = SchematicLoader.list(dir).sortedBy { it.name.lowercase() }
+        selected = readSelected()
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val name = runCatching {
+                        context.contentResolver.query(
+                            uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                        )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                    }.getOrNull()?.substringAfterLast('/')
+                        ?: "imported_${System.currentTimeMillis()}.schem"
+                    val dir = SchematicLoader.resolveDir(context).apply { mkdirs() }
+                    context.contentResolver.openInputStream(uri)?.use { inp ->
+                        File(dir, name).outputStream().use { inp.copyTo(it) }
+                    }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        status = "Imported $name"
+                        refresh()
+                    }
+                } catch (e: Exception) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        status = "Import failed: ${e.message}"
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { refresh() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        ScreenHeader(title = "Schematics") {
+            TextButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
+                Text("Import", color = RubidiumOnSurfaceDim, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = { refresh() }) {
+                Text("Refresh", color = RubidiumOnSurfaceDim, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            }
+        }
+
+        if (status.isNotEmpty()) {
+            Text(
+                status,
+                color = RubidiumAccentLight,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+        }
+
+        @Composable
+        fun SchematicRow(
+            title: String, subtitle: String, active: Boolean,
+            onClick: () -> Unit, onDelete: (() -> Unit)?
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (active) RubidiumSurfaceVar else RubidiumSurface)
+                    .clickable { onClick() }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        color = RubidiumOnBackground,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
+                    )
+                    Text(
+                        subtitle,
+                        color = RubidiumOnSurfaceDim,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    )
+                }
+                if (active) {
+                    Text("ACTIVE", color = RubidiumAccentLight, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                    Spacer(Modifier.width(10.dp))
+                }
+                if (onDelete != null) {
+                    Text(
+                        "Delete",
+                        color = RubidiumOnSurfaceDim,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { onDelete() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth().weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            SchematicRow(
+                title = "Newest file (auto)",
+                subtitle = "Schematica loads the newest file in the folder",
+                active = selected.isBlank(),
+                onClick = { select("") },
+                onDelete = null
+            )
+            files.forEach { f ->
+                SchematicRow(
+                    title = f.name,
+                    subtitle = "${f.extension.uppercase()} · ${f.length() / 1024} KB",
+                    active = selected.equals(f.name, ignoreCase = false),
+                    onClick = { select(f.name) },
+                    onDelete = {
+                        runCatching { f.delete() }
+                        if (selected == f.name) select("")
+                        refresh()
+                    }
+                )
+            }
+            if (files.isEmpty()) {
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    "No schematics yet.\nTap Import to add .mcstructure / .schem /\n.schematic / .litematic files.",
+                    color = RubidiumOnSurfaceDim,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        Text(
+            "Folder: $dirPath",
+            color = RubidiumOnSurfaceDim,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 10.sp,
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
 private fun SettingsTab() {
     val context = LocalContext.current
     var uiStyle by remember { mutableStateOf(OverlayUiStore.get(context)) }
@@ -1400,6 +1591,12 @@ private fun BottomTabBar(current: DashTab, onSelect: (DashTab) -> Unit) {
                 label    = "Configs",
                 selected = current == DashTab.CONFIG,
                 onClick  = { onSelect(DashTab.CONFIG) }
+            )
+            TabItem(
+                icon     = { tint -> CubeGlyph(tint = tint) },
+                label    = "Schematics",
+                selected = current == DashTab.SCHEMATICS,
+                onClick  = { onSelect(DashTab.SCHEMATICS) }
             )
             TabItem(
                 icon     = { tint -> PersonGlyph(tint = tint) },
@@ -1777,6 +1974,31 @@ private fun HomeGlyph(modifier: Modifier = Modifier, tint: Color = Color.White) 
             close()
         }
         drawPath(path = path, color = tint, style = Stroke(width = h * 0.09f, cap = StrokeCap.Round))
+    }
+}
+
+@Composable
+private fun CubeGlyph(modifier: Modifier = Modifier, tint: Color = Color.White) {
+    Canvas(modifier = modifier.size(20.dp)) {
+        val w = size.width
+        val h = size.height
+        val join = androidx.compose.ui.graphics.StrokeJoin.Round
+        val stroke = Stroke(width = h * 0.07f, join = join)
+        val top = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.50f, h * 0.06f); lineTo(w * 0.88f, h * 0.28f)
+            lineTo(w * 0.50f, h * 0.50f); lineTo(w * 0.12f, h * 0.28f); close()
+        }
+        val left = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.12f, h * 0.28f); lineTo(w * 0.50f, h * 0.50f)
+            lineTo(w * 0.50f, h * 0.94f); lineTo(w * 0.12f, h * 0.72f); close()
+        }
+        val right = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.88f, h * 0.28f); lineTo(w * 0.50f, h * 0.50f)
+            lineTo(w * 0.50f, h * 0.94f); lineTo(w * 0.88f, h * 0.72f); close()
+        }
+        drawPath(top, color = tint, style = stroke)
+        drawPath(left, color = tint, style = stroke)
+        drawPath(right, color = tint, style = stroke)
     }
 }
 

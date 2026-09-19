@@ -100,20 +100,7 @@ class Schematica : BaseModule(
 
     // ── loading ──────────────────────────────────────────────────────────
 
-    private fun schemDir(): File {
-        val app = RubidiumClientApp.instance
-        val candidates = mutableListOf<File>()
-        runCatching { app.getExternalFilesDir("schematics")?.let(candidates::add) }
-        candidates.add(File("/sdcard/Documents/Eclient/schematics"))
-        candidates.add(File("/sdcard/Download/Eclient/schematics"))
-        // Prefer a folder that actually has schematic files; else create the private one.
-        for (dir in candidates) {
-            if (SchematicLoader.list(dir).isNotEmpty()) return dir
-        }
-        val primary = candidates.first()
-        runCatching { primary.mkdirs() }
-        return primary
-    }
+    private fun schemDir(): File = SchematicLoader.resolveDir(RubidiumClientApp.instance)
 
     private fun loadAsync() {
         scope.launch {

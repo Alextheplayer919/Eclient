@@ -85,6 +85,23 @@ class SchematicModel(
 
 object SchematicLoader {
 
+    /** The schematics folder — private app dir preferred (no permissions), with
+     *  shared-folder fallbacks; first folder that HAS files wins, so users who
+     *  dropped files via Documents/Download keep working. mkdirs the primary
+     *  dir when nothing exists yet. Shared with the dashboard's Schematics tab. */
+    fun resolveDir(context: android.content.Context): File {
+        val candidates = mutableListOf<File>()
+        runCatching { context.getExternalFilesDir("schematics")?.let(candidates::add) }
+        candidates.add(File("/sdcard/Documents/Eclient/schematics"))
+        candidates.add(File("/sdcard/Download/Eclient/schematics"))
+        for (dir in candidates) {
+            if (list(dir).isNotEmpty()) return dir
+        }
+        val primary = candidates.first()
+        runCatching { primary.mkdirs() }
+        return primary
+    }
+
     private val SUPPORTED = setOf("mcstructure", "schem", "schematic", "litematic")
     private const val MAX_CELLS = 6_000_000   // phone-memory sanity cap
 
