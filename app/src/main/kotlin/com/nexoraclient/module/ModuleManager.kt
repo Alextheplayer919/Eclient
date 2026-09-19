@@ -178,6 +178,7 @@ object ModuleManager {
             AutoDisconnect(),
             Performance(),
             FlightProbe(),
+            Schematica(),
             CommandHelper(),
             PacketCollector()
         )
