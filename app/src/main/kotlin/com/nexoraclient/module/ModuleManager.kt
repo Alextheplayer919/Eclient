@@ -124,6 +124,7 @@ object ModuleManager {
             // ── MOVEMENT ─────────────────────────────────────────────
             Speed(),
             MotionFly(),
+            NoLagback(),
             CreativeFly(),
             BypassFly(),
             LifeboatFly(),

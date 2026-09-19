@@ -22,7 +22,7 @@ import kotlin.random.Random
 // the menu instead of a number that needs a code comment to decode.
 private enum class AttackMode { CPS, INTERVAL }
 private enum class TargetMode { SINGLE, SWITCH, MULTI }
-private enum class RotationMode { NONE, AIM, RANDOM, TARGET_LOCK }
+private enum class RotationMode { NONE, AIM, RANDOM, TARGET_LOCK, SOFT_LOCK }
 private enum class QuantumAlgo { DYNAMIC, VELOCITY, PATTERN, NEURAL }
 
 /**
@@ -54,7 +54,7 @@ class KillAura : BaseModule(
 
     // ── Attack settings ────────────────────────────────────
     private val attackMode     = enum("Attack Mode", AttackMode.CPS)
-    private val cps            = int("CPS",          25, 1, 50)
+    private val cps            = int("CPS",          20, 1, 100)
     private val intervalTicks  = int("Interval",      1, 0, 20)
     private val boost          = int("Packets",      2, 1, 10)
     private val hitAttempts    = int("Hit Attempts", 1, 1, 5)
@@ -77,6 +77,14 @@ class KillAura : BaseModule(
     private val rotMode        = enum("Rotation Mode", RotationMode.AIM)
     private val lockDistance   = float("Lock Distance", 3f, 0.5f, 7f) // Target Lock: radius to hold from the target, in BLOCKS
     private val lockSpeed      = float("Lock Speed", 4.3f, 0.5f, 12f) // Target Lock: circling speed, blocks per second
+
+    // ── Soft Lock (EXPERIMENTAL): gentle locking that doesn't fight your
+    //    movement — strafe maps to orbiting the target, forward/back maps
+    //    to approaching/retreating, and if you just push forward you still
+    //    plainly move forward. No position teleports, no mirrored moves —
+    //    the wire sees ordinary walking-scale deltas. ──
+    private val softLockStrength = int("Soft Lock Strength", 70, 0, 100)
+    private val softLockRotSpeed = float("Soft Lock Rot Speed", 30f, 2f, 180f)
 
     // ── Weapon switch (Melody Switch) ──────────────────────
     private val weaponSwitch   = enum("Weapon Switch", WeaponSwitchMode.NONE)
@@ -111,6 +119,9 @@ class KillAura : BaseModule(
 
     private var rotAngle = Pair(0f, 0f)
     private var shouldRot = false
+    private var softYaw = 0f
+    private var softPitch = 0f
+    private var lastSoftTarget: EntityTracker.TrackedEntity? = null
 
     private var lastLockTarget: EntityTracker.TrackedEntity? = null
     private var lockLastTickMs = 0L
@@ -433,6 +444,72 @@ class KillAura : BaseModule(
         shouldRot = true
     }
 
+    // ── Soft Lock (EXPERIMENTAL): Zelda-lock-on semantics.
+    //
+    //    Where Target Lock teleports you onto an exact ring and mirrors a
+    //    forced MovePlayer every tick (visible jank + fights rubber-banding),
+    //    Soft Lock never teleports anything. It re-expresses THIS tick's
+    //    natural movement in the orbit frame of the target instead:
+    //
+    //      • analog FORWARD/BACK  → radial motion (walk toward / retreat)
+    //      • analog LEFT/RIGHT    → tangential motion (circle the target)
+    //      • no input             → no steering, you stand still
+    //      • Strength < 100       → blended with your raw movement direction,
+    //                               so at 0% this mode is decoration only.
+    //
+    //    Deltas stay at walking/sprinting scale per packet — the server sees
+    //    ordinary movement, nothing worth correcting. Rotation is a smooth
+    //    pursue capped at Soft Lock Rot Speed°/packet instead of an Aim-snap. ──
+    private fun applySoftLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
+        val px = pkt.position.x
+        val pz = pkt.position.z
+        val prevX = EntityTracker.selfX
+        val prevZ = EntityTracker.selfZ
+
+        val dx = px - prevX
+        val dz = pz - prevZ
+        val speed = sqrt(dx * dx.toDouble() + dz * dz.toDouble()).toFloat()
+
+        val inFwd = pkt.motion.y
+        val inStr = pkt.motion.x
+        val hasMovementInput = abs(inFwd) > 0.05f || abs(inStr) > 0.05f
+
+        if (hasMovementInput && speed > 0.005f) {
+            val ox = px - target.x
+            val oz = pz - target.z
+            val r = sqrt(ox * ox.toDouble() + oz * oz.toDouble()).toFloat().coerceAtLeast(0.5f)
+            val outX = ox / r; val outZ = oz / r
+            val tanX = -outZ;  val tanZ = outX   // tangent, 90° CCW from outward
+
+            val vr = -inFwd  // pushing forward = distance shrinks
+            val vt = inStr   // strafe = orbit direction
+            val nx = (vr * outX + vt * tanX) * speed
+            val nz = (vr * outZ + vt * tanZ) * speed
+
+            val s = softLockStrength.value / 100f
+            val fx = dx * (1f - s) + nx * s
+            val fz = dz * (1f - s) + nz * s
+            pkt.position = Vector3f.from(prevX + fx, pkt.position.y, prevZ + fz)
+        }
+
+        // Smooth pursue rotation toward the target's head, snap on lock-on.
+        val rot = RotationUtil.toPoint(target.x, target.y + 1.5f, target.z)
+        val targetYaw = rot.yaw
+        val targetPitch = rot.pitch
+        if (lastSoftTarget != target) {
+            lastSoftTarget = target
+            softYaw = EntityTracker.selfYaw
+            softPitch = EntityTracker.selfPitch
+        }
+        val maxStep = softLockRotSpeed.value
+        val dy = wrapYaw(targetYaw - softYaw).coerceIn(-maxStep, maxStep)
+        val dp = (targetPitch - softPitch).coerceIn(-maxStep * 0.5f, maxStep * 0.5f)
+        softYaw = wrapYaw(softYaw + dy)
+        softPitch = (softPitch + dp).coerceIn(-90f, 90f)
+        rotAngle = Pair(softPitch, softYaw)
+        shouldRot = true
+    }
+
     // ── Target Lock: REAL movement circling, not a yaw gimmick.
     //
     //    Geometry (owner's circle diagram): you are a dot on a circle, the
@@ -564,6 +641,7 @@ class KillAura : BaseModule(
         when (rotMode.value) {
             RotationMode.RANDOM      -> applyRandomRotation(primary)
             RotationMode.TARGET_LOCK -> applyTargetLock(primary, pkt, session)
+            RotationMode.SOFT_LOCK   -> applySoftLock(primary, pkt)
             RotationMode.NONE,
             RotationMode.AIM         -> calculateRotationKillAura3(primary, pkt)
         }
