@@ -19,6 +19,8 @@ import org.cloudburstmc.protocol.bedrock.packet.TextPacket
 import java.io.File
 import kotlin.math.floor
 
+private enum class RenderStyle { PARTICLES, WIREFRAME, BOTH }
+
 private enum class Marker(val identifier: String) {
     FLAME("minecraft:basic_flame_particle"),
     BLUE_FLAME("minecraft:blue_flame_particle"),
@@ -55,6 +57,7 @@ class Schematica : BaseModule(
 ) {
 
     private val fileName   = string("File (blank = newest)", "")
+    private val style      = enum("Render Style", RenderStyle.WIREFRAME)
     private val marker     = enum("Marker Particle", Marker.BLUE_FLAME)
     private val layer      = int("Layer (0 = all)", 0, 0, 256)
     private val maxPoints  = int("Max Points", 350, 50, 1500)
@@ -67,6 +70,7 @@ class Schematica : BaseModule(
     @Volatile private var exposed: IntArray = IntArray(0)
     @Volatile private var originX = 0; @Volatile private var originY = 0; @Volatile private var originZ = 0
     @Volatile private var lastSession: RubidiumRelaySession? = null
+    @Volatile private var wireframeBroken = false
 
     override fun onEnable() {
         super.onEnable()
@@ -171,8 +175,13 @@ class Schematica : BaseModule(
             for (i in 0 until minOf(maxPoints.value, scored.size)) picked.add(scored[i].second)
         }
 
-        val identifier = marker.value.identifier
         val dim = EntityTracker.selfDimension
+        if (style.value != RenderStyle.WIREFRAME) spawnParticles(m, picked, session, dim)
+        if (style.value != RenderStyle.PARTICLES) drawBoxes(m, picked, session, dim)
+    }
+
+    private fun spawnParticles(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
+        val identifier = marker.value.identifier
         for (idx in picked) {
             val (x, y, z) = m.coordsOf(idx)
             session.clientBound(SpawnParticleEffectPacket().apply {
@@ -188,6 +197,50 @@ class Schematica : BaseModule(
             })
         }
     }
+
+    // Wireframe mode: DebugDrawerPacket (clientbound debug geometry, Mojang's
+    // own script-debugging overlay — boxes with color + lifetime, no collision,
+    // server sees nothing). One packet batches up to 500 shapes; stable shape
+    // ids make repaints replace rather than stack; totalTimeLeft self-expires
+    // shortly after the last repaint when the module is disabled.
+    // NOTE: the codec's DebugShape references java.awt.Color which stock
+    // Android does not ship — guarded: first linkage failure permanently
+    // falls back to particles for this session (announce included).
+    private fun drawBoxes(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
+        if (wireframeBroken) return
+        runCatching {
+            val ttl = (respawnMs.value / 1000f) + 0.4f
+            var packet = newDrawer()
+            var count = 0
+            for (idx in picked) {
+                val (x, y, z) = m.coordsOf(idx)
+                packet.shapes.add(org.cloudburstmc.protocol.bedrock.data.debugshape.DebugBox().apply {
+                    id = idx.toLong() + 1
+                    dimension = dim
+                    position = Vector3f.from((originX + x).toFloat(), (originY + y).toFloat(), (originZ + z).toFloat())
+                    scale = null
+                    rotation = null
+                    totalTimeLeft = ttl
+                    color = java.awt.Color(0.35f, 0.85f, 1.0f)
+                    attachedToEntityId = null
+                    maximumRenderDistance = null
+                    boxBounds = Vector3f.from(1.002f, 1.002f, 1.002f)
+                })
+                if (++count >= 500) {
+                    session.clientBound(packet)
+                    packet = newDrawer()
+                    count = 0
+                }
+            }
+            if (packet.shapes.isNotEmpty()) session.clientBound(packet)
+        }.onFailure {
+            wireframeBroken = true
+            announce("§c[Schematica]§r Wireframe unsupported on this device (${it.javaClass.simpleName}) — using particles.")
+            DiagLog.log("SCHEMATICA", "wireframe fallback: ${it.javaClass.simpleName}: ${it.message}")
+        }
+    }
+
+    private fun newDrawer() = org.cloudburstmc.protocol.bedrock.packet.DebugDrawerPacket()
 
     private fun announce(message: String) {
         lastSession?.clientBound(TextPacket().apply {
