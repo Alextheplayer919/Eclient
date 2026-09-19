@@ -56,7 +56,9 @@ class NoLagback : BaseModule(
             is CorrectPlayerMovePredictionPacket ->
                 if (dropCorrections.value) event.cancel()
             is MovePlayerPacket ->
-                if (dropResets.value && p.mode == MovePlayerPacket.Mode.RESET) event.cancel()
+                // Cloudburst names wire-mode 1 'RESPAWN'; it's the same mode
+                // the server uses for hard position-RESET corrections.
+                if (dropResets.value && p.mode == MovePlayerPacket.Mode.RESPAWN) event.cancel()
             else -> { }
         }
     }
