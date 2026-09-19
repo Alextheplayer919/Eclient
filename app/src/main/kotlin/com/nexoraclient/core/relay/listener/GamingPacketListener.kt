@@ -7,7 +7,6 @@ import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.utils.BlockTracker
 import com.rubidiumclient.utils.ChunkParser
 import com.rubidiumclient.utils.WorldBlockTracker
-import com.rubidiumclient.utils.DiagLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,24 +24,6 @@ class GamingPacketListener : RubidiumPacketListener {
 
     companion object {
         private const val TAG = "GamingPacketListener"
-    }
-
-    // ── Kick forensics: last ~40 movement packets, dumped on disconnect ──
-    private val kickRing = ArrayDeque<String>()
-    private val kickRingLock = Any()
-
-    private fun ringPush(s: String) {
-        synchronized(kickRingLock) {
-            kickRing.addLast("${System.currentTimeMillis()} $s")
-            while (kickRing.size > 40) kickRing.removeFirst()
-        }
-    }
-
-    private fun ringDump(reason: String) {
-        val dump = synchronized(kickRingLock) { kickRing.toList() }
-        DiagLog.log(TAG, "── kick context ($reason), ${'$'}{dump.size} recent move packets ──")
-        dump.forEach { DiagLog.log(TAG, "  $it") }
-        DiagLog.log(TAG, "── end kick context ──")
     }
 
     override val priority: Int = 100
@@ -94,18 +75,15 @@ class GamingPacketListener : RubidiumPacketListener {
                 packet.isSupported = false
                 return true
             }
-            is MovePlayerPacket          -> { ringPush("C>S MovePlayer pos=${packet.position} mode=${packet.mode}") }
-            is PlayerAuthInputPacket     -> { ringPush("C>S AuthInput pos=${packet.position} delta=${packet.delta}") }
+            is MovePlayerPacket          -> { }
+            is PlayerAuthInputPacket     -> { }
             is PlayerActionPacket        -> { }
             is InteractPacket            -> { }
             is InventoryTransactionPacket-> { }
             is CommandRequestPacket      -> { }
             is TextPacket                -> { }
             is AnimatePacket             -> { }
-            is DisconnectPacket          -> {
-                DiagLog.log(TAG, "client-end disconnect: reason=${packet.reason} kick='${packet.kickMessage}'")
-                ringDump("client disconnect")
-            }
+            is DisconnectPacket          -> { }
         }
         return true
     }
@@ -147,14 +125,8 @@ class GamingPacketListener : RubidiumPacketListener {
             is UpdateAttributesPacket -> { }
             is PlayerListPacket       -> { }
             is ChangeDimensionPacket  -> { }
-            is CorrectPlayerMovePredictionPacket -> { ringPush("S>C Correction pos=${packet.position} pred=${packet.predictionType}") }
-            is SetEntityMotionPacket             -> { if (packet.runtimeEntityId == EntityTracker.selfRuntimeId) ringPush("S>C SetMotion ${packet.motion}") }
-            is MovePlayerPacket                  -> { ringPush("S>C MovePlayer pos=${packet.position} mode=${packet.mode}") }
             is TextPacket             -> { }
-            is DisconnectPacket       -> {
-                DiagLog.log(TAG, "SERVER KICK: reason=${packet.reason} kick='${packet.kickMessage}'")
-                ringDump("server kick")
-            }
+            is DisconnectPacket       -> { }
 
             is TransferPacket -> {
                 val newHost = packet.address
