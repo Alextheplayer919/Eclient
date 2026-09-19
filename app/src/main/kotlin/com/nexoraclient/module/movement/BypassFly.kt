@@ -214,8 +214,11 @@ class BypassFly : BaseModule(
             }
         }
 
-        // Governor settle window: no upward impulse right after a correction.
-        val motionYFinal = if (MovementCompliance.shouldSettleVertical() && motionY > 0f) 0f else motionY
+        // Governor: no upward impulse right after a correction; sustained
+        // climbs past the flag budget invert to a sink (flag prevention).
+        val motionYFinal = MovementCompliance.governedVertical(
+            if (MovementCompliance.shouldSettleVertical() && motionY > 0f) 0f else motionY
+        )
         val motionPacket = SetEntityMotionPacket().apply {
             runtimeEntityId = EntityTracker.selfRuntimeId
             motion = Vector3f.from(motionX, motionYFinal, motionZ)

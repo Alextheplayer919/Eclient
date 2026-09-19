@@ -183,6 +183,46 @@ object MovementCompliance {
     fun shouldSettleVertical(): Boolean =
         adaptive && ageOfLastCorrectionMs() < 600L
 
+    // ── Climb-rate guard (flag prevention, NOT legitimacy optics) ─────────
+    // The single most-common fly-detect predicate in bedrock anticheats is:
+    //   posY increased while not jumping/knockback/slam/riding → flag.
+    // Sustained upward drift is what burns that budget; brief hops don't.
+    // So: track the net climb over a rolling window and, past the budget,
+    // invert to a controlled sink. You keep horizontal speed and short
+    // climbs; what disappears is the "climbed 30 blocks in 4 s" signature.
+    private const val CLIMB_WINDOW_MS = 1000L
+    private const val CLIMB_BUDGET_BPS = 2.0f   // blocks/sec sustained net climb
+    private val climbSamples = ArrayDeque<Pair<Long, Float>>()
+
+    private fun pushClimbSample() {
+        val t = nowMs()
+        synchronized(climbSamples) {
+            climbSamples.addLast(t to EntityTracker.selfY)
+            val cut = t - CLIMB_WINDOW_MS
+            while (true) {
+                val h = climbSamples.peekFirst() ?: break
+                if (h.first < cut) climbSamples.removeFirst() else break
+            }
+        }
+    }
+
+    /**
+     * Vertical channel gate. `base` = the vertical speed the module wants.
+     * Ascents exceeding CLIMB_BUDGET_BPS sustained are replaced by a gentle
+     * sink; descents and budget-sized climbs pass untouched.
+     */
+    fun governedVertical(base: Float): Float {
+        if (!adaptive) return base
+        pushClimbSample()
+        if (base <= 0f) return base
+        val oldest: Pair<Long, Float>? = synchronized(climbSamples) { climbSamples.peekFirst() }
+        if (oldest == null) return base
+        val dt = (nowMs() - oldest.first) / 1000f
+        if (dt < 0.2f) return base
+        val rate = (EntityTracker.selfY - oldest.second) / dt
+        return if (rate > CLIMB_BUDGET_BPS) -0.5f else base
+    }
+
     private fun trimOld() {
         val cut = nowMs() - 10_000L
         while (true) {
