@@ -5,6 +5,16 @@ anchored at your position. **Client-side visuals only; the server sees nothing.*
 
 ## Quick start
 
+**Dashboard (easiest):** bottom bar → **Schematics** tab (cube icon, between
+Configs and Accounts). **Import** button sits exactly where Configs' Import is —
+picks any file via the system file picker and copies it into the schematics folder.
+The tab lists every file on device: tap to select (chat-status confirms), an
+**ACTIVE** chip marks the current one, Delete cleans up, Refresh rescans. The
+pseudo-row "Newest file (auto)" restores blank/auto behavior. The folder path
+is shown at the bottom of the tab.
+
+**Manual:**
+
 1. Drop files into the schematics folder (any file manager works):
    `/sdcard/Android/data/<package>/files/schematics/`
    (fallbacks also scanned: `Documents/Eclient/schematics`, `Download/Eclient/schematics`)
