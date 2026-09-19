@@ -155,14 +155,7 @@ public class DebugDrawerSerializer_v1001 extends DebugDrawerSerializer_v975 {
                 sphere.setSegments((int) buffer.readUnsignedByte());
                 return sphere;
             case TEXT:
-                DebugText text = (DebugText) shape;
-                text.setText(helper.readString(buffer));
-                text.setUseRotation(buffer.readBoolean());
-                text.setBackgroundColor(helper.readOptional(buffer, null, (buf, h) -> new Color(buf.readIntLE(), true)));
-                text.setDepthTest(buffer.readBoolean());
-                text.setShowBackface(buffer.readBoolean());
-                text.setShowTextBackface(buffer.readBoolean());
-                return text;
+                return readDebugText(buffer, helper, (DebugText) shape);
             case CYLINDER:
                 DebugCylinder cylinder = (DebugCylinder) shape;
                 cylinder.setRadiusX(helper.readVector2f(buffer));

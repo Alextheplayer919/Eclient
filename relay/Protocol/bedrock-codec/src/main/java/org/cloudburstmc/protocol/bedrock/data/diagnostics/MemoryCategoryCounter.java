@@ -81,6 +81,7 @@ public class MemoryCategoryCounter {
         PERSONA_PIECES,
         /**
          * @since v2168
+         * @deprecated since v2192
          */
         PERSONA_ANIMATIONS,
         /**

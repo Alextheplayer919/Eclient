@@ -14,15 +14,7 @@ import static org.cloudburstmc.nbt.NbtUtils.MAX_DEPTH;
 import static org.cloudburstmc.nbt.NbtUtils.MAX_READ_SIZE;
 
 public class NBTInputStream implements Closeable {
-    // GÜVENLİK: maxReadSize bütçe kontrolü array/list boyutları için yetersiz
-    // kalıyordu (bkz. deserialize() içindeki yorumlar) — bu yüzden allocation'dan
-    // ÖNCE kontrol edilen, bağımsız sert üst sınırlar ekliyoruz. Değerler normal
-    // oyun verisi için fazlasıyla cömert, kötü niyetli aşırı büyük değerleri
-    // (örn. Integer.MAX_VALUE) hemen reddediyor.
-    private static final int MAX_ARRAY_SIZE  = 16 * 1024 * 1024; // 16M eleman
-    private static final int MAX_LIST_LENGTH = 1_000_000;
-
-    private final DataInput input;
+    private final LimitedDataInput input;
     private final boolean internKeys;
     private final boolean internValues;
     private boolean closed = false;
@@ -34,7 +26,7 @@ public class NBTInputStream implements Closeable {
     public NBTInputStream(DataInput input, boolean internKeys, boolean internValues, long maxReadSize) {
         Objects.requireNonNull(input, "input");
         if (input instanceof LimitedDataInput) {
-            this.input = input;
+            this.input = (LimitedDataInput) input;
         } else {
             this.input = new LimitedDataInput(input, maxReadSize);
         }
@@ -109,13 +101,7 @@ public class NBTInputStream implements Closeable {
                 return input.readDouble();
             case BYTE_ARRAY:
                 int arraySize = input.readInt();
-                // GÜVENLİK FIX: maxReadSize kontrolü burada işe yaramıyor çünkü
-                // "new byte[arraySize]" allocation'ı, bütçe kontrolünden ÖNCE
-                // yapılıyordu. Kötü niyetli arraySize (örn. Integer.MAX_VALUE)
-                // anında dev bir allocation'a / uzun donmaya sebep oluyordu.
-                if (arraySize < 0 || arraySize > MAX_ARRAY_SIZE) {
-                    throw new IOException("NBT byte array too large: " + arraySize);
-                }
+                input.tryReadArray(arraySize);
                 byte[] bytes = new byte[arraySize];
                 input.readFully(bytes);
                 return bytes;
@@ -143,12 +129,8 @@ public class NBTInputStream implements Closeable {
                 NbtType<?> listType = NbtType.byId(typeId);
                 List<Object> list = new ArrayList<>();
                 int listLength = input.readInt();
-                // GÜVENLİK FIX: listType == END gibi "sıfır byte maliyetli" bir
-                // tip seçilirse, tryRead() hiç tetiklenmediği için maxReadSize
-                // bütçesi bu döngüyü hiç sınırlamıyordu — milyarlarca elemanlı
-                // bir liste CPU'yu/heap'i tüketip client'ı donduruyordu.
-                if (listLength < 0 || listLength > MAX_LIST_LENGTH) {
-                    throw new IOException("NBT list too large: " + listLength);
+                if (listType.getEnum() == NbtType.Enum.END) {
+                    return new NbtList(NbtType.END, list);
                 }
                 for (int i = 0; i < listLength; i++) {
                     list.add(deserialize(listType, maxDepth - 1));
@@ -156,9 +138,7 @@ public class NBTInputStream implements Closeable {
                 return new NbtList(listType, list);
             case INT_ARRAY:
                 arraySize = input.readInt();
-                if (arraySize < 0 || arraySize > MAX_ARRAY_SIZE) {
-                    throw new IOException("NBT int array too large: " + arraySize);
-                }
+                input.tryReadArray(arraySize * 4);
                 int[] ints = new int[arraySize];
                 for (int i = 0; i < arraySize; i++) {
                     ints[i] = input.readInt();
@@ -166,9 +146,7 @@ public class NBTInputStream implements Closeable {
                 return ints;
             case LONG_ARRAY:
                 arraySize = input.readInt();
-                if (arraySize < 0 || arraySize > MAX_ARRAY_SIZE) {
-                    throw new IOException("NBT long array too large: " + arraySize);
-                }
+                input.tryReadArray(arraySize * 8);
                 long[] longs = new long[arraySize];
                 for (int i = 0; i < arraySize; i++) {
                     longs[i] = input.readLong();
@@ -183,8 +161,8 @@ public class NBTInputStream implements Closeable {
     public void close() throws IOException {
         if (closed) return;
         closed = true;
-        if (input instanceof Closeable) {
-            ((Closeable) input).close();
+        if (input != null) {
+            input.close();
         }
     }
 }

@@ -12,6 +12,7 @@ import org.cloudburstmc.nbt.NbtMap;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
 import org.cloudburstmc.protocol.bedrock.codec.EntityDataTypeMap;
 import org.cloudburstmc.protocol.bedrock.codec.v975.BedrockCodecHelper_v975;
+import org.cloudburstmc.protocol.bedrock.data.PresenceConfiguration;
 import org.cloudburstmc.protocol.bedrock.data.Ability;
 import org.cloudburstmc.protocol.bedrock.data.GatheringsConfigurationJoinInfo;
 import org.cloudburstmc.protocol.bedrock.data.definitions.ItemDefinition;
@@ -514,7 +515,6 @@ public class BedrockCodecHelper_v2168 extends BedrockCodecHelper_v975 {
                 VarInts.writeUnsignedInt(byteBuf, ((AutoCraftRecipeAction) action).getRecipeNetworkId());
                 byteBuf.writeByte(((AutoCraftRecipeAction) action).getNumberOfRequestedCrafts()); // count duplication removed
                 List<ItemDescriptorWithCount> ingredients = ((AutoCraftRecipeAction) action).getIngredients();
-                byteBuf.writeByte(ingredients.size());
                 writeArray(byteBuf, ingredients, this::writeIngredient2);
                 break;
             case CRAFT_CREATIVE:
@@ -1000,7 +1000,7 @@ public class BedrockCodecHelper_v2168 extends BedrockCodecHelper_v975 {
         int count = buffer.readUnsignedByte();
         int stackNetworkId = buffer.readBoolean() && buffer.readBoolean() ? VarInts.readInt(buffer) : 0;
         String customName = this.readString(buffer);
-        String filteredCustomName = this.readString(buffer);
+        String filteredCustomName = this.readOptional(buffer, null, this::readString);
         int durabilityCorrection = VarInts.readInt(buffer);
         return new ItemStackResponseSlot(slot, hotbarSlot, count, stackNetworkId,
                 customName, durabilityCorrection, filteredCustomName);
@@ -1015,7 +1015,7 @@ public class BedrockCodecHelper_v2168 extends BedrockCodecHelper_v975 {
         buffer.writeBoolean(true);
         this.writeOptional(buffer, id->id > 0, itemEntry.getStackNetworkId(), VarInts::writeInt);
         this.writeString(buffer, itemEntry.getCustomName());
-        this.writeString(buffer, itemEntry.getFilteredCustomName());
+        this.writeOptionalNull(buffer, itemEntry.getFilteredCustomName(), this::writeString);
         VarInts.writeInt(buffer, itemEntry.getDurabilityCorrection());
     }
 
@@ -1244,5 +1244,15 @@ public class BedrockCodecHelper_v2168 extends BedrockCodecHelper_v975 {
                 buffer.writeBoolean(false);
                 break;
         }
+    }
+
+    @Override
+    public void writePresenceConfiguration(ByteBuf buffer, PresenceConfiguration configuration) {
+        writeOptionalNull(buffer, configuration.getRichPresenceId(), this::writeString);
+    }
+
+    @Override
+    public PresenceConfiguration readPresenceConfiguration(ByteBuf buffer) {
+        return new PresenceConfiguration(null, null, readOptional(buffer, null, this::readString));
     }
 }

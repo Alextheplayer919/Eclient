@@ -86,4 +86,38 @@ public class CameraPreset {
      */
     @Nullable
     private ControlScheme controlScheme;
+    /**
+     * @since v2192
+     */
+    private boolean applyInheritedStartingRotation;
+    /**
+     * @since v2192
+     */
+    @Nullable
+    private Vector2f startingRotation;
+
+    @Deprecated
+    public CameraPreset(String identifier, String parentPreset, Vector3f pos, Float yaw, Float pitch, Vector2f viewOffset, Float radius, Float minYawLimit, Float maxYawLimit, CameraAudioListener listener, OptionalBoolean playEffect, Float rotationSpeed, OptionalBoolean snapToTarget, Vector3f entityOffset, Vector2f horizontalRotationLimit, Vector2f verticalRotationLimit, OptionalBoolean continueTargeting, OptionalBoolean alignTargetAndCameraForward, Float blockListeningRadius, CameraAimAssistPreset aimAssistPreset, ControlScheme controlScheme) {
+        this.identifier = identifier;
+        this.parentPreset = parentPreset;
+        this.pos = pos;
+        this.yaw = yaw;
+        this.pitch = pitch;
+        this.viewOffset = viewOffset;
+        this.radius = radius;
+        this.minYawLimit = minYawLimit;
+        this.maxYawLimit = maxYawLimit;
+        this.listener = listener;
+        this.playEffect = playEffect;
+        this.rotationSpeed = rotationSpeed;
+        this.snapToTarget = snapToTarget;
+        this.entityOffset = entityOffset;
+        this.horizontalRotationLimit = horizontalRotationLimit;
+        this.verticalRotationLimit = verticalRotationLimit;
+        this.continueTargeting = continueTargeting;
+        this.alignTargetAndCameraForward = alignTargetAndCameraForward;
+        this.blockListeningRadius = blockListeningRadius;
+        this.aimAssistPreset = aimAssistPreset;
+        this.controlScheme = controlScheme;
+    }
 }

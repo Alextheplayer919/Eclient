@@ -1,8 +1,8 @@
-package org.cloudburstmc.protocol.bedrock.codec.v1001.serializer;
+package org.cloudburstmc.protocol.bedrock.codec.v2193.serializer;
 
 import io.netty.buffer.ByteBuf;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
-import org.cloudburstmc.protocol.bedrock.codec.v407.serializer.InventoryTransactionSerializer_v407;
+import org.cloudburstmc.protocol.bedrock.codec.v1001.serializer.InventoryTransactionSerializer_v1001;
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData;
 import org.cloudburstmc.protocol.bedrock.data.inventory.transaction.*;
 import org.cloudburstmc.protocol.bedrock.packet.InventoryTransactionPacket;
@@ -10,11 +10,9 @@ import org.cloudburstmc.protocol.common.util.VarInts;
 
 import java.util.List;
 
-import static java.util.Objects.requireNonNull;
+public class InventoryTransactionSerializer_v2193 extends InventoryTransactionSerializer_v1001 {
 
-public class InventoryTransactionSerializer_v1001 extends InventoryTransactionSerializer_v407 {
-
-    public static final InventoryTransactionSerializer_v1001 INSTANCE = new InventoryTransactionSerializer_v1001();
+    public static final InventoryTransactionSerializer_v2193 INSTANCE = new InventoryTransactionSerializer_v2193();
 
     @Override
     public void serialize(ByteBuf buffer, BedrockCodecHelper helper, InventoryTransactionPacket packet) {
@@ -31,11 +29,9 @@ public class InventoryTransactionSerializer_v1001 extends InventoryTransactionSe
             buffer.writeBoolean(false);
         }
 
-        buffer.writeBoolean(true);
         InventoryTransactionType transactionType = packet.getTransactionType();
         VarInts.writeUnsignedInt(buffer, transactionType.ordinal());
 
-        buffer.writeBoolean(true);
         writeInventoryActions(buffer, helper, packet.getActions());
 
         switch (transactionType) {
@@ -66,15 +62,9 @@ public class InventoryTransactionSerializer_v1001 extends InventoryTransactionSe
             }
         }
 
-        if (!buffer.readBoolean()) {
-            throw new IllegalStateException("Expected InventoryTransactionType");
-        }
         InventoryTransactionType transactionType = InventoryTransactionType.values()[VarInts.readUnsignedInt(buffer)];
         packet.setTransactionType(transactionType);
 
-        if (!buffer.readBoolean()) {
-            throw new IllegalStateException("Expected InventoryActionData");
-        }
         readInventoryActions(buffer, helper, packet.getActions());
 
         switch (transactionType) {
@@ -90,12 +80,14 @@ public class InventoryTransactionSerializer_v1001 extends InventoryTransactionSe
         }
     }
 
+    @Override
     public void writeItemUse(ByteBuf buffer, BedrockCodecHelper helper, InventoryTransactionPacket packet) {
         VarInts.writeInt(buffer, packet.getActionType());
         buffer.writeByte(packet.getTriggerType().ordinal());
         helper.writeBlockPosition(buffer, packet.getBlockPosition());
         buffer.writeByte(packet.getBlockFace());
         VarInts.writeInt(buffer, packet.getHotbarSlot());
+        buffer.writeByte(packet.getHand()); // new
         helper.writeNetworkItemStackDescriptor(buffer, packet.getItemInHand());
         helper.writeVector3f(buffer, packet.getPlayerPosition());
         helper.writeVector3f(buffer, packet.getClickPosition());
@@ -104,12 +96,14 @@ public class InventoryTransactionSerializer_v1001 extends InventoryTransactionSe
         buffer.writeByte(packet.getClientCooldownState());
     }
 
+    @Override
     public void readItemUse(ByteBuf buffer, BedrockCodecHelper helper, InventoryTransactionPacket packet) {
         packet.setActionType(VarInts.readInt(buffer));
         packet.setTriggerType(ItemUseTransaction.TriggerType.values()[buffer.readUnsignedByte()]);
         packet.setBlockPosition(helper.readBlockPosition(buffer));
         packet.setBlockFace(buffer.readUnsignedByte());
         packet.setHotbarSlot(VarInts.readInt(buffer));
+        packet.setHand(buffer.readUnsignedByte()); // new
         packet.setItemInHand(helper.readNetworkItemStackDescriptor(buffer));
         packet.setPlayerPosition(helper.readVector3f(buffer));
         packet.setClickPosition(helper.readVector3f(buffer));
@@ -119,44 +113,9 @@ public class InventoryTransactionSerializer_v1001 extends InventoryTransactionSe
     }
 
     @Override
-    public void readItemUseOnEntity(ByteBuf buffer, BedrockCodecHelper helper, InventoryTransactionPacket packet) {
-        packet.setRuntimeEntityId(VarInts.readUnsignedLong(buffer));
-        packet.setActionType(VarInts.readInt(buffer));
-        packet.setHotbarSlot(VarInts.readInt(buffer));
-        packet.setItemInHand(helper.readNetworkItemStackDescriptor(buffer));
-        packet.setPlayerPosition(helper.readVector3f(buffer));
-        packet.setClickPosition(helper.readVector3f(buffer));
-    }
-
-    @Override
-    public void writeItemUseOnEntity(ByteBuf buffer, BedrockCodecHelper helper, InventoryTransactionPacket packet) {
-        VarInts.writeUnsignedLong(buffer, packet.getRuntimeEntityId());
-        VarInts.writeInt(buffer, packet.getActionType());
-        VarInts.writeInt(buffer, packet.getHotbarSlot());
-        helper.writeNetworkItemStackDescriptor(buffer, packet.getItemInHand());
-        helper.writeVector3f(buffer, packet.getPlayerPosition());
-        helper.writeVector3f(buffer, packet.getClickPosition());
-    }
-
-    @Override
-    public void readItemRelease(ByteBuf buffer, BedrockCodecHelper helper, InventoryTransactionPacket packet) {
-        packet.setActionType(VarInts.readInt(buffer));
-        packet.setHotbarSlot(VarInts.readInt(buffer));
-        packet.setItemInHand(helper.readNetworkItemStackDescriptor(buffer));
-        packet.setHeadPosition(helper.readVector3f(buffer));
-    }
-
-    @Override
-    public void writeItemRelease(ByteBuf buffer, BedrockCodecHelper helper, InventoryTransactionPacket packet) {
-        VarInts.writeInt(buffer, packet.getActionType());
-        VarInts.writeInt(buffer, packet.getHotbarSlot());
-        helper.writeNetworkItemStackDescriptor(buffer, packet.getItemInHand());
-        helper.writeVector3f(buffer, packet.getHeadPosition());
-    }
-
     public void readInventoryActions(ByteBuf buffer, BedrockCodecHelper helper, List<InventoryActionData> actions) {
         helper.readArray(buffer, actions, (buf, h) -> {
-            InventorySource source = readSource(buf);
+            InventorySource source = helper.readSource(buf);
             int slot = VarInts.readUnsignedInt(buf);
             ItemData fromItem = h.readNetworkItemStackDescriptor(buf);
             ItemData toItem = h.readNetworkItemStackDescriptor(buf);
@@ -165,67 +124,13 @@ public class InventoryTransactionSerializer_v1001 extends InventoryTransactionSe
         }, helper.getEncodingSettings().maxInventoryActionsOrRequests());
     }
 
+    @Override
     public void writeInventoryActions(ByteBuf buffer, BedrockCodecHelper helper, List<InventoryActionData> actions) {
         helper.writeArray(buffer, actions, (buf, h, action) -> {
-            writeSource(buf, action.getSource());
+            helper.writeSource(buf, action.getSource());
             VarInts.writeUnsignedInt(buf, action.getSlot());
             h.writeNetworkItemStackDescriptor(buf, action.getFromItem());
             h.writeNetworkItemStackDescriptor(buf, action.getToItem());
         });
-    }
-
-    private InventorySource readSource(ByteBuf buffer) {
-        InventorySource.Type type = InventorySource.Type.byId(VarInts.readUnsignedInt(buffer));
-
-        int containerId = 0;
-        InventorySource.Flag flag = null;
-        if (buffer.readBoolean() && buffer.readBoolean()) containerId = buffer.readByte();
-        if (buffer.readBoolean() && buffer.readBoolean()) flag = InventorySource.Flag.values()[VarInts.readUnsignedInt(buffer)];
-        switch (type) {
-            case CONTAINER:
-                return InventorySource.fromContainerWindowId(containerId);
-            case GLOBAL:
-                return InventorySource.fromGlobalInventory();
-            case WORLD_INTERACTION:
-                if (flag == null) throw new IllegalStateException();
-                return InventorySource.fromWorldInteraction(flag);
-            case CREATIVE:
-                return InventorySource.fromCreativeInventory();
-            case NON_IMPLEMENTED_TODO:
-                return InventorySource.fromNonImplementedTodo(containerId);
-            case UNTRACKED_INTERACTION_UI:
-                return InventorySource.fromUntrackedInteractionUI(containerId);
-            default:
-                return InventorySource.fromInvalid();
-        }
-    }
-
-    private void writeSource(ByteBuf buffer, InventorySource inventorySource) {
-        requireNonNull(inventorySource, "InventorySource was null");
-
-        VarInts.writeUnsignedInt(buffer, inventorySource.getType().id());
-
-        buffer.writeBoolean(true);
-        switch (inventorySource.getType()) {
-            case CONTAINER:
-            case NON_IMPLEMENTED_TODO:
-                buffer.writeBoolean(true);
-                buffer.writeByte(inventorySource.getContainerId());
-                break;
-            default:
-                buffer.writeBoolean(false);
-                break;
-        }
-
-        buffer.writeBoolean(true);
-        switch (inventorySource.getType()) {
-            case WORLD_INTERACTION:
-                buffer.writeBoolean(true);
-                VarInts.writeUnsignedInt(buffer, inventorySource.getFlag().ordinal());
-                break;
-            default:
-                buffer.writeBoolean(false);
-                break;
-        }
     }
 }

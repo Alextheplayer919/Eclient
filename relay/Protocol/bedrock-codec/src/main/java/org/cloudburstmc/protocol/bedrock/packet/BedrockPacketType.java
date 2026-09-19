@@ -252,6 +252,8 @@ public class BedrockPacketType {
     public static final BedrockPacketType CLIENTBOUND_UPDATE_SOUND_DATA = new BedrockPacketType("CLIENTBOUND_UPDATE_SOUND_DATA");
     public static final BedrockPacketType SEND_PARTY_DESTINATION_COOKIE = new BedrockPacketType("SEND_PARTY_DESTINATION_COOKIE");
     public static final BedrockPacketType PARTY_DESTINATION_COOKIE_RESPONSE = new BedrockPacketType("PARTY_DESTINATION_COOKIE_RESPONSE");
+    public static final BedrockPacketType SET_PLAYER_FURNACE_OPTIONS = new BedrockPacketType("SET_PLAYER_FURNACE_OPTIONS");
+    public static final BedrockPacketType RECORD_STARTED = new BedrockPacketType("RECORD_STARTED");
 
     @Getter
     private final String name;

@@ -15,12 +15,7 @@ public class ServerboundDiagnosticsSerializer_v975 extends ServerboundDiagnostic
     public void serialize(ByteBuf buffer, BedrockCodecHelper helper, ServerboundDiagnosticsPacket packet) {
         super.serialize(buffer, helper, packet);
 
-        helper.writeArray(buffer, packet.getEntityDiagnostics(), ((buf, h, info) -> {
-            helper.writeString(buf, info.getDisplayName());
-            helper.writeString(buf, info.getEntity());
-            buf.writeLongLE(info.getTimeInNs());
-            buf.writeByte(info.getPercentOfTotal());
-        }));
+        helper.writeArray(buffer, packet.getEntityDiagnostics(), this::writeEntityDiagnosticTimingInfo);
 
         helper.writeArray(buffer, packet.getSystemDiagnostics(), ((buf, h, info) -> {
             helper.writeString(buf, info.getDisplayName());
@@ -35,11 +30,7 @@ public class ServerboundDiagnosticsSerializer_v975 extends ServerboundDiagnostic
         super.deserialize(buffer, helper, packet);
 
         helper.readArray(buffer, packet.getEntityDiagnostics(), (buf, h) ->
-                new EntityDiagnosticTimingInfo(
-                        helper.readString(buf),
-                        helper.readString(buf),
-                        buf.readLongLE(),
-                        (byte) buf.readUnsignedByte()));
+                readEntityDiagnosticTimingInfo(buffer, helper));
 
         helper.readArray(buffer, packet.getSystemDiagnostics(), (buf, h) ->
                 new SystemDiagnosticTimingInfo(
@@ -47,5 +38,21 @@ public class ServerboundDiagnosticsSerializer_v975 extends ServerboundDiagnostic
                         buf.readLongLE(),
                         buf.readLongLE(),
                         (byte) buf.readUnsignedByte()));
+    }
+
+    protected EntityDiagnosticTimingInfo readEntityDiagnosticTimingInfo(ByteBuf buf, BedrockCodecHelper helper) {
+        return new EntityDiagnosticTimingInfo(
+                helper.readString(buf),
+                helper.readString(buf),
+                buf.readLongLE(),
+                (byte) buf.readUnsignedByte(),
+                null, null);
+    }
+
+    protected void writeEntityDiagnosticTimingInfo(ByteBuf buf, BedrockCodecHelper helper, EntityDiagnosticTimingInfo info) {
+        helper.writeString(buf, info.getDisplayName());
+        helper.writeString(buf, info.getEntity());
+        buf.writeLongLE(info.getTimeInNs());
+        buf.writeByte(info.getPercentOfTotal());
     }
 }

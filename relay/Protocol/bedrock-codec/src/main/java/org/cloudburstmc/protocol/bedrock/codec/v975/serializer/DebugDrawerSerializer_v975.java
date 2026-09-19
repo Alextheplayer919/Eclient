@@ -39,13 +39,7 @@ public class DebugDrawerSerializer_v975 extends DebugDrawerSerializer_v924 {
 
         VarInts.writeUnsignedInt(buffer, toPayloadType(DebugShape.Type.TEXT));
 
-        DebugText text = (DebugText) shape;
-        helper.writeString(buffer, text.getText());
-        buffer.writeBoolean(text.isUseRotation());
-        helper.writeOptionalNull(buffer, text.getBackgroundColor(), (buf, h, c) -> buf.writeIntLE(c.getRGB()));
-        buffer.writeBoolean(text.isDepthTest());
-        buffer.writeBoolean(text.isShowBackface());
-        buffer.writeBoolean(text.isShowTextBackface());
+        writeDebugText(buffer, helper, (DebugText) shape);
     }
 
     @Override
@@ -126,16 +120,28 @@ public class DebugDrawerSerializer_v975 extends DebugDrawerSerializer_v924 {
                 sphere.setSegments((int) buffer.readUnsignedByte());
                 return sphere;
             case TEXT:
-                DebugText text = (DebugText) shape;
-                text.setText(helper.readString(buffer));
-                text.setUseRotation(buffer.readBoolean());
-                text.setBackgroundColor(helper.readOptional(buffer, null, (buf, h) -> new Color(buf.readIntLE(), true)));
-                text.setDepthTest(buffer.readBoolean());
-                text.setShowBackface(buffer.readBoolean());
-                text.setShowTextBackface(buffer.readBoolean());
-                return text;
+                return readDebugText(buffer, helper, (DebugText) shape);
             default:
                 throw new IllegalStateException("Unknown debug shape type");
         }
+    }
+
+    protected DebugText readDebugText(ByteBuf buffer, BedrockCodecHelper helper, DebugText text) {
+        text.setText(helper.readString(buffer));
+        text.setUseRotation(buffer.readBoolean());
+        text.setBackgroundColor(helper.readOptional(buffer, null, (buf, h) -> new Color(buf.readIntLE(), true)));
+        text.setDepthTest(buffer.readBoolean());
+        text.setShowBackface(buffer.readBoolean());
+        text.setShowTextBackface(buffer.readBoolean());
+        return text;
+    }
+
+    protected void writeDebugText(ByteBuf buffer, BedrockCodecHelper helper, DebugText text) {
+        helper.writeString(buffer, text.getText());
+        buffer.writeBoolean(text.isUseRotation());
+        helper.writeOptionalNull(buffer, text.getBackgroundColor(), (buf, h, c) -> buf.writeIntLE(c.getRGB()));
+        buffer.writeBoolean(text.isDepthTest());
+        buffer.writeBoolean(text.isShowBackface());
+        buffer.writeBoolean(text.isShowTextBackface());
     }
 }
