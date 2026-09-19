@@ -34,7 +34,8 @@ import java.io.FileInputStream
  * Both formats flatten cells with x fastest, then z, then y:
  *   index = (y * length + z) * width + x
  *
- * States/properties are dropped — the ghost renderer only needs identifiers.
+ * `palette` keeps the bare identifier for the ghost; `states` preserves the
+ * full Java block state (properties) for planning — ghost rendering is unaffected.
  * Cell value -LAYER_EMPTY means "nothing here".
  */
 class SchematicModel(
@@ -42,8 +43,9 @@ class SchematicModel(
     val width: Int,
     val height: Int,
     val length: Int,
-    val palette: List<String>,          // palette index -> block identifier (states dropped)
-    val cells: IntArray                 // size w*h*l; EMPTY = no block
+    val palette: List<String>,          // palette index -> block identifier (name only)
+    val cells: IntArray,                // size w*h*l; EMPTY = no block
+    val states: List<JavaState> = palette.map { JavaState(it) }   // palette index -> full state (props from file where present)
 ) {
     companion object {
         const val EMPTY = -1
@@ -183,12 +185,13 @@ object SchematicLoader {
             ?: blocksComp.getByteArray("Data")
             ?: throw LoadError("${file.name}: no BlockData")
 
-        val paletteArr = arrayOfNulls<String>(paletteTag.size + 1)
+        val stateArr = arrayOfNulls<JavaState>(paletteTag.size + 1)
         for (k in paletteTag.keys) {
             val v = (paletteTag.get(k) as? Int) ?: continue
-            if (v in paletteArr.indices) paletteArr[v] = k
+            if (v in stateArr.indices) stateArr[v] = JavaState.parseKeyed(k)
         }
-        val palette = paletteArr.map { it ?: "minecraft:air" }
+        val states = stateArr.map { it ?: JavaState.AIR }
+        val palette = states.map { it.name }
 
         // BlockData is a varint-packed palette index stream.
         val cells = IntArray(w * h * l) { SchematicModel.EMPTY }
@@ -208,7 +211,7 @@ object SchematicLoader {
             if (value > 0) cells[cell] = value   // index 0 is air per format convention
             cell++
         }
-        return SchematicModel(file.nameWithoutExtension, w, h, l, palette, cells)
+        return SchematicModel(file.nameWithoutExtension, w, h, l, palette, cells, states)
     }
     // ── .schematic (legacy MCEdit numeric IDs) ───────────────────────────
 
@@ -287,7 +290,7 @@ object SchematicLoader {
 
         data class Region(val minX: Int, val minY: Int, val minZ: Int,
                           val sx: Int, val sy: Int, val sz: Int,
-                          val palette: List<String>, val cells: IntArray)
+                          val palette: List<JavaState>, val cells: IntArray)
 
         val parsed = ArrayList<Region>()
         for (name in regions.keys) {
@@ -300,8 +303,8 @@ object SchematicLoader {
             if (sx == 0 || sy == 0 || sz == 0) continue
 
             val paletteTag = reg.getList("BlockStatePalette", NbtType.COMPOUND)
-            val palette = ArrayList<String>(paletteTag.size)
-            for (e in paletteTag) palette.add(e?.getString("Name") ?: "minecraft:air")
+            val palette = ArrayList<JavaState>(paletteTag.size)
+            for (e in paletteTag) palette.add(JavaState.fromNbt(e))
 
             val packed = reg.getLongArray("BlockStates")
             if (packed.isEmpty()) throw LoadError("${file.name}: region $name has no BlockStates")
@@ -328,7 +331,7 @@ object SchematicLoader {
                     v = v or (packed[li + 1] shl (64 - off))
                 }
                 val id = (v and mask).toInt()
-                if (id > 0 && id < palette.size && !palette[id].endsWith(":air")) cells[cell] = id
+                if (id > 0 && id < palette.size && !palette[id].isAir) cells[cell] = id
             }
             // Normalize min corner (litematic sizes may be negative).
             parsed.add(Region(minOf(px, px + ddx), minOf(py, py + ddy), minOf(pz, pz + ddz), sx, sy, sz, palette, cells))
@@ -340,17 +343,22 @@ object SchematicLoader {
         val w = gMaxX - gMinX; val h = gMaxY - gMinY; val l = gMaxZ - gMinZ
         if (w * h * l > MAX_CELLS) throw LoadError("${file.name}: merged bounds too big (${w * h * l} cells)")
 
-        val palette = arrayListOf("minecraft:air")
+        // Merge keyed on the FULL state (name + properties): stairs with
+        // different orientations are different palette entries when built
+        // from .litematic — required for the auto-builder (ghost counts are
+        // unchanged; it only reads names).
+        val states = arrayListOf(JavaState("minecraft:air"))
         val remap = ArrayList<IntArray>()
         for (r in parsed) {
             val m = IntArray(r.palette.size)
             for (i in r.palette.indices) {
-                m[i] = palette.indexOf(r.palette[i]).takeIf { it >= 0 } ?: run { palette.add(r.palette[i]); palette.size - 1 }
+                m[i] = states.indexOf(r.palette[i]).takeIf { it >= 0 } ?: run { states.add(r.palette[i]); states.size - 1 }
             }
             remap.add(m)
         }
         val cells = IntArray(w * h * l) { SchematicModel.EMPTY }
-        val model = SchematicModel(file.nameWithoutExtension, w, h, l, palette, cells)
+        val palette = states.map { it.name }
+        val model = SchematicModel(file.nameWithoutExtension, w, h, l, palette, cells, states)
         for ((ri, r) in parsed.withIndex()) {
             val m = remap[ri]
             for (y in 0 until r.sy) for (z in 0 until r.sz) for (x in 0 until r.sx) {
