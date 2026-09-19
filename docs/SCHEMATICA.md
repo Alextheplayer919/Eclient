@@ -34,7 +34,7 @@ is shown at the bottom of the tab.
 | Setting | Meaning |
 |---|---|
 | File (blank = newest) | Filename in the schematics folder |
-| Render Style | **PARTICLES** (required on current builds) / WIREFRAME / BOTH — wireframe choices gracefully fall back to particles with a one-time chat notice (see below) |
+| Render Style | **WIREFRAME** (crisp per-block boxes, ServerScriptDebugDrawer — needs Minecraft 26.20+, recommended 26.40) / PARTICLES / BOTH — below 26.20 wireframe gracefully falls back to particles with a one-time chat notice |
 | Marker Particle | FLAME / BLUE_FLAME / BALLOON / HEART / NOTE |
 | Layer (0 = all) | Show only one Y layer (1-based) — layer-by-layer building |
 | Max Points | Ghost density cap (50–1500, default 350) — closest blocks win |
@@ -61,7 +61,8 @@ owns the world model (WorldBlockTracker) and can inject clientbound packets.
 | Primitive | Status | Verdict |
 |---|---|---|
 | **Particles** (`SpawnParticleEffect`) | ✅ shipped v1 | Zero-risk dots; faint but safe. |
-| **ClientboundDebugRendererPacket** (Mojang legacy debug overlay: RGBA marker cubes + TTL + CLEAR) | ❌ removed (kills session) | Was shipped in v2, then **instant-kicked users**: packet ID 164 no longer exists in current retail client builds (verified against the Bedrock packet table, 26.40/26.45 — only `debug_info` + `server_script_debug_drawer` ID 328 remain). The client can't map ID 164 to any handler and tears the session down the moment the first byte arrives; even `CLEAR_DEBUG_MARKERS` hits the same dead ID. Cloudburst's serializer is still registered (it was correct — IntLE type since v671, string, vec3, RGBA floats, int64 LE duration), so the encode side was never the bug. Possible future restoration: hand-encode `ServerScriptDebugDrawer` (ID 328) via `UnknownPacket` — Cloudburst's own class for it (`DebugDrawerPacket`) is `java.awt.Color`-bound and cannot exist on Android at all. |
+| **ClientboundDebugRendererPacket** (Mojang legacy debug overlay) | ❌ removed (kills session) | Packet ID 164 no longer exists in current retail clients — the client's packet table has no handler for it and the game tears the session down on the first byte. Never send. |
+| **ServerScriptDebugDrawer** (ID 328, hand-encoded BOX shapes via `UnknownPacket`) | ✅ shipped v3 | Crisp per-block boxes, one batched packet per repaint (~350 shapes in ~15 KB), stable shape ids for in-place refresh, explicit removal on disable, self-expiring TTL backstop. Cloudburst's own `DebugDrawerPacket` class is `java.awt.Color`-bound and cannot compile on Android, so the bytes are written by hand (`core/schem/DebugDrawerBoxes.kt`), cross-checked byte-for-byte against Cloudburst's serializer source chain (v818→v859→v924→v975→v1001→v2168). Supported wire layout: the v975-chain BOX path → **protocols 975/1001/2168 = Bedrock 26.20–26.44** (26.45+ moved to a new layout — not wired up yet). |
 | **Falling-block entities** | ❌ rejected (researched) | Bedrock's `falling_block` appearance control from pure packets is buggy/unreliable (bedrock.dev: people fake it with block+entity combos instead). Java display entities don't exist on bedrock. |
 | **Clientbound fake blocks** (`UpdateBlock` injection) | 🧪 future, needs safety gate | Physics-poisons the client's own collision → claim lies → flags. Only viable with a proximity gate (fake blocks far away, downgrade to boxes nearby). Complex bookkeeping: server updates constantly overwrite; must repaint at sub-chunk granularity. |
 | **Native GL hook via attach** | 🔒 blocked on round-3 device experiment | True translucent Schematica-style hologram. Requires `libeclient_attach` Phase A GO to inject rendering into the game process. |

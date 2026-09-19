@@ -5,6 +5,7 @@ import com.rubidiumclient.core.proxy.CollisionGuard
 import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.core.schem.SchematicLoader
+import com.rubidiumclient.core.schem.DebugDrawerBoxes
 import com.rubidiumclient.core.schem.SchematicModel
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.module.BaseModule
@@ -57,7 +58,7 @@ class Schematica : BaseModule(
 ) {
 
     private val fileName   = string("File (blank = newest)", "")
-    private val style      = enum("Render Style", RenderStyle.PARTICLES)
+    private val style      = enum("Render Style", RenderStyle.WIREFRAME)
     private val marker     = enum("Marker Particle", Marker.BLUE_FLAME)
     private val layer      = int("Layer (0 = all)", 0, 0, 256)
     private val maxPoints  = int("Max Points", 350, 50, 1500)
@@ -71,6 +72,8 @@ class Schematica : BaseModule(
     @Volatile private var originX = 0; @Volatile private var originY = 0; @Volatile private var originZ = 0
     @Volatile private var lastSession: RubidiumRelaySession? = null
     @Volatile private var wireframeNoticeShown = false
+    @Volatile private var drawerIds = LongArray(0)
+    private val WIRE_COLOR = (0xD9 shl 24) or (0x59 shl 16) or (0xD9 shl 8) or 0xFF  // cyan, 85% alpha (AARRGGBB, old marker look)
 
     override fun onEnable() {
         super.onEnable()
@@ -85,6 +88,11 @@ class Schematica : BaseModule(
     }
 
     override fun onDisable() {
+        val ids = drawerIds
+        if (ids.isNotEmpty()) {
+            drawerIds = LongArray(0)
+            lastSession?.clientBound(DebugDrawerBoxes.removePacket(ids))
+        }
         model = null
         exposed = IntArray(0)
         super.onDisable()
@@ -164,21 +172,48 @@ class Schematica : BaseModule(
         }
 
         val dim = EntityTracker.selfDimension
-        // Wireframe mode is DEAD on current game builds: ClientboundDebugRenderer
-        // (packet ID 164) was dropped from the client's packet table entirely
-        // — the byte stream is valid, the client simply has no handler for the
-        // ID, so it tears the session down the instant the first packet lands
-        // (the reported "instant kick on toggle"). Even CLEAR_DEBUG_MARKERS
-        // hits the same dead ID. WIREFRAME/BOTH now fall back to particles,
-        // with a one-time explanation per enable. Possible future restoration:
-        // the replacement ServerScriptDebugDrawer (ID 328) hand-encoded via
-        // UnknownPacket (Cloudburst's own class for it is java.awt-bound, so
-        // it cannot be used on Android).
-        spawnParticles(m, picked, session, dim)
-        if (style.value != RenderStyle.PARTICLES && !wireframeNoticeShown) {
-            wireframeNoticeShown = true
-            announce("Schematica: Mojang removed the debug-renderer packet from current game builds, so wireframe is no longer possible — drawing with particles instead.")
+        // Wireframe is back, correctly this time: ServerScriptDebugDrawer
+        // (packet 328) hand-encoded via UnknownPacket (DebugDrawerBoxes) —
+        // the old debug-renderer packet 164 killed sessions, and Cloudburst's
+        // DebugDrawerPacket class can't exist on Android (java.awt.Color).
+        // Gated to protocol >= 975 (Bedrock 26.20+): the encoder targets that
+        // chain's shared BOX wire layout exactly; older sessions fall back to
+        // particles with a one-time notice (removal below is safe on old
+        // clients because drawerIds only ever fills through the gated path).
+        val wantsWire = style.value != RenderStyle.PARTICLES
+        val wireOk    = session.activeCodec.protocolVersion >= DebugDrawerBoxes.MIN_PROTOCOL
+        if (!wantsWire || !wireOk) spawnParticles(m, picked, session, dim)
+        if (wantsWire) {
+            if (wireOk) drawDrawer(picked, session, dim)
+            else if (!wireframeNoticeShown) {
+                wireframeNoticeShown = true
+                announce("Schematica: wireframe needs Minecraft 26.20+ (protocol 975+) — drawing with particles on this session instead.")
+            }
         }
+    }
+
+    // Wireframe: one ServerScriptDebugDrawer packet per repaint, one box per
+    // picked cell. Stable ids (1..N) make repaints update the same shapes in
+    // place; onDisable sends explicit removals (ids only fill via the gated
+    // path, so old-protocol clients never see this packet at all).
+    private fun drawDrawer(picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
+        val model = model ?: return
+        val ids    = LongArray(picked.size) { (it + 1).toLong() }
+        val coords = FloatArray(picked.size * 3)
+        for ((n, idx) in picked.withIndex()) {
+            val (x, y, z) = model.coordsOf(idx)
+            coords[n * 3]     = (originX + x).toFloat()
+            coords[n * 3 + 1] = (originY + y).toFloat()
+            coords[n * 3 + 2] = (originZ + z).toFloat()
+        }
+        drawerIds = ids
+        session.clientBound(DebugDrawerBoxes.addBoxesPacket(
+            ids        = ids,
+            corners    = coords,
+            argb       = WIRE_COLOR,
+            ttlSeconds = respawnMs.value / 1000f + 0.4f,
+            dimension  = dim
+        ))
     }
 
     private fun spawnParticles(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
