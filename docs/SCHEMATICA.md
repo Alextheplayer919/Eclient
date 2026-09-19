@@ -71,9 +71,57 @@ owns the world model (WorldBlockTracker) and can inject clientbound packets.
 
 - **No printer** (auto-place) — server-auth inventory + placement packets make
   this a separate project; v1 is display-only. Ask if wanted.
-- No .litematic / legacy .schematic yet (easy to add next to .schem).
+- Formats moved off this list — all four are supported now: `.schem`, `.litematic`, `.mcstructure`, legacy `.schematic` (see Quick start + Fix record below).
 - Shell-only rendering (interior hidden block faces get no points) — this is a
   perf feature, not a bug: a 10k-block castle renders as ~1–2k points.
 - Block *states* (stairs orientation etc.) are dropped — the ghost shows shape,
   not orientation.
 - Repaint interval changes need a re-toggle (loop starts on enable).
+
+## Fix record
+
+### .litematic block-count mismatch / scrambled ghost (fixed in 07dcf95)
+
+**Symptom:** `Modern_Office_Building_Shell-from-abfielder.litematic` reported
+18,136 blocks / 18,053 shell points; the file's own metadata says 16,703.
+Dimensions (`Size` tag) were correct; blocks were visibly scrambled after the
+first stretch of the build.
+
+**Root cause:** the decoder read the `BlockStates` long array in the **padded**
+modern chunk-section layout — `perLong = 64 / bits` entries wholly inside one
+long, `bits = max(2, ceil(log2(palette)))`. Litematica instead packs
+**tightly**: entry N starts at bit `N * bits` of the bit stream and **may
+straddle two longs** (LSB-first, no per-long alignment). For palette bit widths
+that divide 64 evenly (2/4/8/16/32/64) the two layouts are byte-identical,
+which is why the bug stayed hidden until a 7-bit palette hit a large build.
+
+Consequences with a 7-bit palette (125 states), 144,432 cells:
+
+- Every entry after the first long is read at the wrong bit offset → wrong
+  palette indices → scrambled blocks + inflated solid count.
+- The padded reader also stops early: the file carries
+  `ceil(total * bits / 64)` longs (**15,798**); the padded reader "expects"
+  16,048, so the last ~2,250 cells never get decoded (142,182 of 144,432).
+
+The exact `ceil(total * bits / 64) == longArray.size` invariant is the
+format-level proof: a tight 7-bit stream of 144,432 cells yields exactly
+15,798 longs — the file's own array length — while the padded layout is
+provably bigger.
+
+**Fix:** bit-indexed decode (`bitIndex = cell * bits`, carry across longs via
+`packed[li+1] shl (64 - off)`), `perLong` removed, stale comments corrected in
+`core/schem/SchematicModel.kt`.
+
+**Verification (three independent routes):**
+
+1. Reporter's independent parse (gzip + NBT, tight bit-pack): solid count
+   16,703 == file metadata `TotalBlocks` 16,703.
+2. Long-count arithmetic above.
+3. Synthetic round-trip at the same parameters (7 bits, 144,432 cells):
+   tight encoder produced exactly 15,798 longs; the old loop decoded exactly
+   142,182 cells (matching the observed buggy behavior); the corrected loop
+   recovered **144,432 / 144,432** cells bit-exactly.
+
+**Result after fix (on the reported file):** 16,703 blocks / 15,924 shell
+points. `.schem`, `.schematic`, `.mcstructure` were never affected (separate
+decoders).
