@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.cloudburstmc.math.vector.Vector3f
+import org.cloudburstmc.protocol.bedrock.data.ClientboundDebugRendererType
+import org.cloudburstmc.protocol.bedrock.packet.ClientboundDebugRendererPacket
 import org.cloudburstmc.protocol.bedrock.packet.SpawnParticleEffectPacket
 import org.cloudburstmc.protocol.bedrock.packet.TextPacket
 import java.io.File
@@ -70,7 +72,6 @@ class Schematica : BaseModule(
     @Volatile private var exposed: IntArray = IntArray(0)
     @Volatile private var originX = 0; @Volatile private var originY = 0; @Volatile private var originZ = 0
     @Volatile private var lastSession: RubidiumRelaySession? = null
-    @Volatile private var wireframeBroken = false
 
     override fun onEnable() {
         super.onEnable()
@@ -84,6 +85,7 @@ class Schematica : BaseModule(
     }
 
     override fun onDisable() {
+        clearMarkers()
         model = null
         exposed = IntArray(0)
         super.onDisable()
@@ -177,7 +179,7 @@ class Schematica : BaseModule(
 
         val dim = EntityTracker.selfDimension
         if (style.value != RenderStyle.WIREFRAME) spawnParticles(m, picked, session, dim)
-        if (style.value != RenderStyle.PARTICLES) drawBoxes(m, picked, session, dim)
+        if (style.value != RenderStyle.PARTICLES) drawMarkers(m, picked, session, dim)
     }
 
     private fun spawnParticles(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
@@ -198,49 +200,41 @@ class Schematica : BaseModule(
         }
     }
 
-    // Wireframe mode: DebugDrawerPacket (clientbound debug geometry, Mojang's
-    // own script-debugging overlay — boxes with color + lifetime, no collision,
-    // server sees nothing). One packet batches up to 500 shapes; stable shape
-    // ids make repaints replace rather than stack; totalTimeLeft self-expires
-    // shortly after the last repaint when the module is disabled.
-    // NOTE: the codec's DebugShape references java.awt.Color which stock
-    // Android does not ship — guarded: first linkage failure permanently
-    // falls back to particles for this session (announce included).
-    private fun drawBoxes(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
-        if (wireframeBroken) return
-        runCatching {
-            val ttl = (respawnMs.value / 1000f) + 0.4f
-            var packet = newDrawer()
-            var count = 0
-            for (idx in picked) {
-                val (x, y, z) = m.coordsOf(idx)
-                packet.shapes.add(org.cloudburstmc.protocol.bedrock.data.debugshape.DebugBox().apply {
-                    id = idx.toLong() + 1
-                    dimension = dim
-                    position = Vector3f.from((originX + x).toFloat(), (originY + y).toFloat(), (originZ + z).toFloat())
-                    scale = null
-                    rotation = null
-                    totalTimeLeft = ttl
-                    color = java.awt.Color(0.35f, 0.85f, 1.0f)
-                    attachedToEntityId = null
-                    maximumRenderDistance = null
-                    boxBounds = Vector3f.from(1.002f, 1.002f, 1.002f)
-                })
-                if (++count >= 500) {
-                    session.clientBound(packet)
-                    packet = newDrawer()
-                    count = 0
-                }
-            }
-            if (packet.shapes.isNotEmpty()) session.clientBound(packet)
-        }.onFailure {
-            wireframeBroken = true
-            announce("§c[Schematica]§r Wireframe unsupported on this device (${it.javaClass.simpleName}) — using particles.")
-            DiagLog.log("SCHEMATICA", "wireframe fallback: ${it.javaClass.simpleName}: ${it.message}")
+    // Wireframe mode: ClientboundDebugRendererPacket (Mojang's own debug
+    // overlay, "meant for script debugging" — floating marker cubes with RGBA
+    // color + TTL, no collision, server sees nothing). One cube per packet —
+    // chosen over the newer DebugDrawerPacket because that codec class is
+    // java.awt.Color-bound, and java.awt does not exist on Android at all.
+    // Markers self-expire ~0.4s after the last repaint; onDisable also sends
+    // CLEAR_DEBUG_MARKERS for immediate teardown.
+    private fun drawMarkers(m: SchematicModel, picked: List<Int>, session: RubidiumRelaySession, dim: Int) {
+        val duration = respawnMs.value.toLong() + 400L
+        for (idx in picked) {
+            val (x, y, z) = m.coordsOf(idx)
+            session.clientBound(ClientboundDebugRendererPacket().apply {
+                debugMarkerType = ClientboundDebugRendererType.ADD_DEBUG_MARKER_CUBE
+                markerText = ""
+                markerPosition = Vector3f.from(
+                    originX + x + 0.5f,
+                    originY + y + 0.5f,
+                    originZ + z + 0.5f
+                )
+                markerColorRed = 0.35f
+                markerColorGreen = 0.85f
+                markerColorBlue = 1.0f
+                markerColorAlpha = 0.85f
+                markerDuration = duration
+            })
         }
     }
 
-    private fun newDrawer() = org.cloudburstmc.protocol.bedrock.packet.DebugDrawerPacket()
+    private fun clearMarkers() {
+        lastSession?.clientBound(ClientboundDebugRendererPacket().apply {
+            debugMarkerType = ClientboundDebugRendererType.CLEAR_DEBUG_MARKERS
+            markerText = ""
+            markerPosition = Vector3f.from(0f, 0f, 0f)
+        })
+    }
 
     private fun announce(message: String) {
         lastSession?.clientBound(TextPacket().apply {
