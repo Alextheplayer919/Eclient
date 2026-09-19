@@ -2,6 +2,7 @@ package com.rubidiumclient.module.movement
 
 import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.core.proxy.MovementCompliance
+import com.rubidiumclient.config.ServerConfig
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.events.PacketEventBus
 import com.rubidiumclient.module.BaseModule
@@ -60,11 +61,15 @@ class NoLagback : BaseModule(
     override fun onEnable() {
         super.onEnable()
         MovementCompliance.adaptive = (mode.value == NoLagMode.ADAPTIVE)
+        MovementCompliance.onSessionStart(
+            try { ServerConfig.getHostBlocking() } catch (_: Exception) { "unknown" }
+        )
         PacketEventBus.register(this)
     }
 
     override fun onDisable() {
         MovementCompliance.adaptive = false
+        MovementCompliance.onSessionEnd()
         PacketEventBus.unregister(this)
         super.onDisable()
     }

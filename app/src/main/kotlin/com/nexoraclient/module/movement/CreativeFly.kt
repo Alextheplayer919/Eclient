@@ -1,6 +1,7 @@
 package com.rubidiumclient.module.movement
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.MovementCompliance
 import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.module.*
@@ -81,7 +82,8 @@ class CreativeFly : BaseModule(
         // ekstra timer/jitter da yok (doğal PlayerAuthInputPacket hızında çalışır).
         var verticalMotion = 0f
         if (pkt.inputData.contains(PlayerAuthInputData.JUMPING)) {
-            verticalMotion = flySpeed.value
+            verticalMotion = if (MovementCompliance.shouldSettleVertical()) 0f
+                             else MovementCompliance.governedSpeed(flySpeed.value)
         } else if (pkt.inputData.contains(PlayerAuthInputData.SNEAKING)) {
             verticalMotion = -flySpeed.value
         }

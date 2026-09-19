@@ -1,6 +1,7 @@
 package com.rubidiumclient.module.movement
 
 import com.rubidiumclient.core.proxy.EntityTracker
+import com.rubidiumclient.core.proxy.MovementCompliance
 import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.module.*
@@ -190,8 +191,9 @@ class BypassFly : BaseModule(
             speedFactor = if (hasInput) 1f else 0f
         }
 
-        val strafe  = inputX * horizontalSpeed.value * speedFactor
-        val forward = inputZ * horizontalSpeed.value * speedFactor
+        val governed = MovementCompliance.governedSpeed(horizontalSpeed.value)
+        val strafe  = inputX * governed * speedFactor
+        val forward = inputZ * governed * speedFactor
         val motionX = strafe * cosYaw - forward * sinYaw
         val motionZ = forward * cosYaw + strafe * sinYaw
 
@@ -212,9 +214,11 @@ class BypassFly : BaseModule(
             }
         }
 
+        // Governor settle window: no upward impulse right after a correction.
+        val motionYFinal = if (MovementCompliance.shouldSettleVertical() && motionY > 0f) 0f else motionY
         val motionPacket = SetEntityMotionPacket().apply {
             runtimeEntityId = EntityTracker.selfRuntimeId
-            motion = Vector3f.from(motionX, motionY, motionZ)
+            motion = Vector3f.from(motionX, motionYFinal, motionZ)
         }
         event.session.clientBound(motionPacket)
     }

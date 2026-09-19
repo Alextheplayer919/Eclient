@@ -1,5 +1,8 @@
 package com.rubidiumclient.core.proxy
 
+import android.content.Context
+import android.content.SharedPreferences
+import com.rubidiumclient.RubidiumClientApp
 import java.util.ArrayDeque
 
 /**
@@ -113,7 +116,72 @@ object MovementCompliance {
     private fun applyPressure(hit: Float) {
         pressure() // apply recovery first so hits compose on a fresh base
         pressureRaw = (pressureRaw * hit).coerceAtLeast(0.05f)
+        if (adaptive) learnPunish()
     }
+
+    // ── v2.2 per-server calibration ────────────────────────────────────────
+    // Learn the highest speed factor a given server tolerates and REMEMBER it:
+    // quiet ticks creep the ceiling up, corrections slash and persist it.
+    // Next join starts at the learned value instead of re-negotiating from 1.0.
+    private const val CALIB_PREFS = "nolagback_calib"
+    private const val CEIL_DEFAULT = 0.6f
+    private const val CEIL_MIN = 0.20f
+    private const val CEIL_CREEP = 0.0002f  // per governedSpeed call in a quiet zone
+
+    @Volatile private var ceiling = CEIL_DEFAULT
+    @Volatile private var serverKey = ""
+    private var calibPrefs: SharedPreferences? = null
+
+    fun onSessionStart(host: String) {
+        serverKey = host
+        calibPrefs = runCatching {
+            RubidiumClientApp.instance.getSharedPreferences(CALIB_PREFS, Context.MODE_PRIVATE)
+        }.getOrNull()
+        ceiling = calibPrefs?.getFloat("ceil_${host}", CEIL_DEFAULT) ?: CEIL_DEFAULT
+        pressureRaw = ceiling          // don't re-negotiate the server from scratch
+        pressureStampMs = nowMs()
+    }
+
+    fun onSessionEnd() {
+        persistCeiling()
+        serverKey = ""
+        beliefFresh = false
+    }
+
+    private fun persistCeiling() {
+        if (serverKey.isEmpty()) return
+        runCatching { calibPrefs?.edit()?.putFloat("ceil_${serverKey}", ceiling)?.apply() }
+    }
+
+    private fun learnQuiet() {
+        ceiling = (ceiling + CEIL_CREEP).coerceAtMost(1f)
+    }
+
+    private fun learnPunish() {
+        ceiling = (ceiling * 0.85f).coerceAtLeast(CEIL_MIN)
+        persistCeiling()
+    }
+
+    // ── Governor public API (shared by every fly module) ──────────────────
+
+    /**
+     * Applies the full compliance stack to a base speed: correction pressure,
+     * live drift from the server's believed position, and the learned
+     * per-server ceiling. Quiet zones creep the ceiling back up. Modules call
+     * this on every speed value they're about to emit.
+     */
+    fun governedSpeed(base: Float): Float {
+        if (!adaptive) return base
+        var scale = pressure()
+        val d = discrepancy()
+        if (d >= 0f) scale *= 0.30f / (0.30f + d)
+        if (correctionsInLast(2000) == 0 && (d < 0.15f || d < 0f)) learnQuiet()
+        return base * minOf(scale, ceiling)
+    }
+
+    /** True during the post-correction settle window — suppress positive Y. */
+    fun shouldSettleVertical(): Boolean =
+        adaptive && ageOfLastCorrectionMs() < 600L
 
     private fun trimOld() {
         val cut = nowMs() - 10_000L

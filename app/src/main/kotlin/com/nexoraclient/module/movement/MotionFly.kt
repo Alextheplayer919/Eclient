@@ -30,8 +30,22 @@ class MotionFly : BaseModule(
     // ── Shortcut ──────────────────────────────────────
     private val shortcut      = bool("Shortcut",         false)   // appears in floating shortcut bar
 
+    // ── Legit Vertical (v3-lite, EXPERIMENTAL) ──
+    // Flat hovering is hard physical proof of flight to any server that
+    // simulates gravity. With this on, the vertical channel instead emits a
+    // simulated vanilla trajectory: full gravity + drag, jump impulse every
+    // 400ms (vanilla hop cadence). Altitude gain ≈1 block/s (WAY slower than
+    // hover fly) but the trajectory looks like aggressive bunny-hopping —
+    // physics-consistent by construction. WANT_UP = keep hopping, WANT_DOWN
+    // sink assist. Horizontal channel is unaffected (still governor-scaled).
+    private val legitVertical = bool("Legit Vertical",   false)
+
     // ── State ──────────────────────────────────────────
     private var lastPos = Vector3f.ZERO
+
+    // Legit Vertical simulated ballistic state
+    private var vySim = 0f
+    private var lastJumpMs = 0L
 
     override fun onEnable() {
         super.onEnable()
@@ -90,23 +104,25 @@ class MotionFly : BaseModule(
             else -> glide.value
         }
 
-        // ── Compliance governor (NoLagback ADAPTIVE) ──────────
-        // Two signals, same goal: never give the server another anomaly
-        // window for free. Pressure = correction-history multiplier; drift =
-        // live distance from the server's believed position. Right after a
-        // correction, positive Y is suspended too (hovering is the single
-        // most correction-provoking state there is).
+        // ── Compliance governor (NoLagback ADAPTIVE, v2.2 shared helpers) ──
         if (MovementCompliance.adaptive) {
-            var scale = MovementCompliance.pressure()
-            val drift = MovementCompliance.discrepancy()
-            if (drift >= 0f) {
-                scale *= (0.30f / (0.30f + drift))            // 0 drift -> 1.0, 0.3 -> 0.5, 1.2 -> 0.2
-            }
-            horizSpeed *= scale
-            // settle window: 600ms post-correction, vertical is capped to glide
-            if (MovementCompliance.ageOfLastCorrectionMs() < 600L && vertSpeed > glide.value) {
+            horizSpeed = MovementCompliance.governedSpeed(horizSpeed)
+            if (MovementCompliance.shouldSettleVertical() && vertSpeed > glide.value) {
                 vertSpeed = glide.value
             }
+        }
+
+        // ── Legit Vertical override (v3-lite) ──
+        if (legitVertical.value) {
+            if (MovementCompliance.adaptive && MovementCompliance.ageOfLastCorrectionMs() < 100L) vySim = 0f
+            vySim = (vySim - 0.08f) * 0.98f          // vanilla gravity + air drag
+            if (wantUp && System.currentTimeMillis() - lastJumpMs >= 400L) {
+                vySim = 0.42f                          // vanilla jump impulse (blocks/tick)
+                lastJumpMs = System.currentTimeMillis()
+            }
+            if (wantDown) vySim -= 0.15f
+            vySim = vySim.coerceIn(-3.0f, 1.0f)
+            vertSpeed = vySim
         }
 
         // ── Input rotation ──────────────────────────
