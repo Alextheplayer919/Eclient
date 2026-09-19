@@ -192,8 +192,12 @@ object MovementCompliance {
     //   posY increased while not jumping/knockback/slam/riding → flag.
     // Sustained upward drift is what burns that budget; brief hops don't.
     // So: track the net climb over a rolling window and, past the budget,
-    // invert to a controlled sink. You keep horizontal speed and short
+    // clamp ascent to hover (return 0 — an active sink feels like a server
+    // rubber-band and was user-rejected). You keep horizontal speed and short
     // climbs; what disappears is the "climbed 30 blocks in 4 s" signature.
+    // Protocol cross-check (Oomph/V3): persuasion forgives X/Z micro-drift
+    // but NEVER Y, so the vertical channel is exactly where quiet protection
+    // pays off most.
     private const val CLIMB_WINDOW_MS = 1000L
 
     /** Sustained net-climb budget in blocks/sec; 0 or less disables the
