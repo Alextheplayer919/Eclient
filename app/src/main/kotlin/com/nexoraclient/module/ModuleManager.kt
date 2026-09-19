@@ -177,6 +177,7 @@ object ModuleManager {
             ComboShortcut(2),
             AutoDisconnect(),
             Performance(),
+            FlightProbe(),
             CommandHelper(),
             PacketCollector()
         )
