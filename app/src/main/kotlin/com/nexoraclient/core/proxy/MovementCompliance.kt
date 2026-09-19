@@ -35,7 +35,7 @@ object MovementCompliance {
     private const val BELIEF_TTL_MS  = 10_000L
     private const val CORR_WINDOW_MS = 1000L
     private const val PRESSURE_HIT   = 0.8f
-    private const val PRESSURE_RECOVER_PER_MS = 0.00025f // full recovery ≈ 800ms quiet
+    private const val PRESSURE_RECOVER_PER_MS = 0.0008f // single correction recovers in ~250ms
 
     @Volatile var adaptive = false          // NoLagback ADAPTIVE mode drives the governor
 
@@ -63,6 +63,7 @@ object MovementCompliance {
             corrTimes.addLast(lastCorrectionMs)
             trimOld()
         }
+        serverProven = true
         applyPressure(PRESSURE_HIT)
     }
 
@@ -129,6 +130,7 @@ object MovementCompliance {
     private const val CEIL_CREEP = 0.0002f  // per governedSpeed call in a quiet zone
 
     @Volatile private var ceiling = CEIL_DEFAULT
+    @Volatile private var serverProven = false
     @Volatile private var serverKey = ""
     private var calibPrefs: SharedPreferences? = null
 
@@ -138,7 +140,8 @@ object MovementCompliance {
             RubidiumClientApp.instance.getSharedPreferences(CALIB_PREFS, Context.MODE_PRIVATE)
         }.getOrNull()
         ceiling = calibPrefs?.getFloat("ceil_${host}", CEIL_DEFAULT) ?: CEIL_DEFAULT
-        pressureRaw = ceiling          // don't re-negotiate the server from scratch
+        serverProven = false           // proof resets every session; the slider rules until the server corrects us
+        pressureRaw = 1f
         pressureStampMs = nowMs()
     }
 
@@ -172,11 +175,12 @@ object MovementCompliance {
      */
     fun governedSpeed(base: Float): Float {
         if (!adaptive) return base
-        var scale = pressure()
-        val d = discrepancy()
-        if (d >= 0f) scale *= 0.30f / (0.30f + d)
-        if (correctionsInLast(2000) == 0 && (d < 0.15f || d < 0f)) learnQuiet()
-        return base * minOf(scale, ceiling)
+        val scale = pressure()
+        // Learned ceiling only applies once THIS server has proven it polices
+        // movement in THIS session — otherwise the user's slider is law.
+        val cap = if (serverProven) ceiling else 1f
+        if (serverProven && correctionsInLast(2000) == 0) learnQuiet()
+        return base * minOf(scale, cap)
     }
 
     /** True during the post-correction settle window — suppress positive Y. */
