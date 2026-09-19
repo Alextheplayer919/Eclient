@@ -39,10 +39,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalContext
+import com.rubidiumclient.core.schem.SchematicLoader
+import java.io.File
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1907,7 +1911,9 @@ private fun SettingRow(setting: ModuleSetting<*>, onShortcutChanged: () -> Unit)
                 }
             }
         }
-        is StringSetting -> {
+        is StringSetting -> if (setting.name == SchematicFilePicker.SETTING_NAME) {
+            SchematicFilePicker.Row(setting)
+        } else {
             var v by remember { mutableStateOf(setting.value) }
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 2.dp),
@@ -1930,6 +1936,88 @@ private fun SettingRow(setting: ModuleSetting<*>, onShortcutChanged: () -> Unit)
             }
         }
         else -> {}
+    }
+}
+
+
+/** In-game schematic switcher, rendered in place of the File text field for
+ *  the Schematica module (ClickGUI parity with the dashboard's Schematics tab,
+ *  intentionally WITHOUT an import option — importing lives on the dashboard).
+ *  A compact dropdown: current selection, tap to expand into the device's
+ *  schematic list, tap a file to switch (module: re-toggle to apply). */
+private object SchematicFilePicker {
+    const val SETTING_NAME = "File (blank = newest)"
+
+    @Composable
+    fun Row(setting: StringSetting) {
+        val context = LocalContext.current
+        var expanded by remember { mutableStateOf(false) }
+        var cur by remember { mutableStateOf(setting.value) }
+        var files by remember { mutableStateOf<List<File>>(emptyList()) }
+
+        LaunchedEffect(expanded) {
+            if (expanded) {
+                files = SchematicLoader.list(SchematicLoader.resolveDir(context))
+                    .sortedBy { it.name.lowercase() }
+            }
+        }
+
+        Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(setting.name, fontSize = 12.sp, color = RubidiumOnSurface,
+                    modifier = Modifier.weight(0.4f))
+                Row(
+                    Modifier.weight(0.6f).height(30.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(RubidiumSurfaceVar)
+                        .clickable { expanded = !expanded }
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (cur.isBlank()) "auto (newest)" else cur,
+                        fontSize = 11.sp, color = RubidiumOnSurface, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(if (expanded) "\u25B2" else "\u25BC", fontSize = 8.sp, color = RubidiumOnSurfaceDim)
+                }
+            }
+            if (expanded) {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 160.dp).padding(top = 4.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(RubidiumSurface)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    @Composable
+                    fun PickRow(label: String, active: Boolean, onPick: () -> Unit) {
+                        Text(
+                            (if (active) "\u25CF  " else "\u25CB  ") + label,
+                            fontSize = 11.sp,
+                            color = if (active) RubidiumAccentLight else RubidiumOnSurface,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick() }
+                                .padding(horizontal = 10.dp, vertical = 7.dp)
+                        )
+                    }
+                    PickRow("auto (newest)", cur.isBlank()) { cur = ""; setting.value = ""; expanded = false }
+                    files.forEach { file ->
+                        PickRow(file.name, cur == file.name) { cur = file.name; setting.value = file.name; expanded = false }
+                    }
+                    if (files.isEmpty()) {
+                        Text(
+                            "no files yet —\nimport from the dashboard",
+                            fontSize = 10.sp, color = RubidiumOnSurfaceDim, textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(8.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
