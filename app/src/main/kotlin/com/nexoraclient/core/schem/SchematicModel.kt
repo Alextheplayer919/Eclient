@@ -24,8 +24,12 @@ import java.io.FileInputStream
  *                  LEGACY_IDS, unknown IDs ghost as stone.
  *   .litematic   — Litematica format. NBT (gzip or plain), possibly multiple
  *                  Regions merged into the combined bounding box. BlockStates
- *                  are bit-packed (Litematica packer: entries never cross long
- *                  boundaries, LSB-first, bits = max(2, ceil(log2(palette)))).
+ *                  are TIGHTLY bit-packed (Litematica packer: entry N starts
+ *                  at bit N*bits of the stream and MAY straddle two longs,
+ *                  LSB-first, bits = max(2, ceil(log2(palette)))). NOT the
+ *                  padded modern chunk-section layout (no per-long alignment:
+ *                  ceil(total*bits/64) == longArray size, verified on real
+ *                  files; the padded variant would need more longs).
  *
  * Both formats flatten cells with x fastest, then z, then y:
  *   index = (y * length + z) * width + x
@@ -304,21 +308,27 @@ object SchematicLoader {
             val total = sx * sy * sz
             if (total > MAX_CELLS) throw LoadError("${file.name}: region $name too big ($total cells)")
 
-            // Litematica packing: bits = max(2, ceil(log2(paletteSize))), entries
-            // LSB-first, wholly contained within each long.
+            // Litematica packing: bits = max(2, ceil(log2(paletteSize))),
+            // entries LSB-first and TIGHTLY packed — entry N lives at bit
+            // N*bits of the stream and can straddle two longs. (Not the
+            // contiguous-per-long modern chunk layout: with a 7-bit palette
+            // that wastes 1 bit/long and reads every entry after the first
+            // long from the wrong offset — the .litematic scramble bug.)
             var bits = 1; while ((1 shl bits) < palette.size) bits++
             bits = bits.coerceAtLeast(2)
-            val perLong = 64 / bits
             val mask = (1L shl bits) - 1L
             val cells = IntArray(total) { SchematicModel.EMPTY }
-            var cell = 0
-            outer@ for (lv in packed) {
-                for (j in 0 until perLong) {
-                    if (cell >= total) break@outer
-                    val v = ((lv ushr (j * bits)) and mask).toInt()
-                    if (v > 0 && v < palette.size && !palette[v].endsWith(":air")) cells[cell] = v
-                    cell++
+            for (cell in 0 until total) {
+                val bitIndex = cell.toLong() * bits
+                val li  = (bitIndex ushr 6).toInt()
+                val off = (bitIndex and 63).toInt()
+                if (li >= packed.size) break
+                var v = packed[li] ushr off
+                if (off + bits > 64 && li + 1 < packed.size) {
+                    v = v or (packed[li + 1] shl (64 - off))
                 }
+                val id = (v and mask).toInt()
+                if (id > 0 && id < palette.size && !palette[id].endsWith(":air")) cells[cell] = id
             }
             // Normalize min corner (litematic sizes may be negative).
             parsed.add(Region(minOf(px, px + ddx), minOf(py, py + ddy), minOf(pz, pz + ddz), sx, sy, sz, palette, cells))
