@@ -1,0 +1,8 @@
+local.properties
+*.jks
+*.keystore
+*.jks
+*.keystore
+# signing material — CI uses secrets.KEYSTORE_B64 / secrets.KEYSTORE_PASS
+keystore.txt
+release_base64.txt
