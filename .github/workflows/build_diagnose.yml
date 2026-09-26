@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write        # the playtest release step publishes the signed APK
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -53,6 +56,25 @@ jobs:
 
           echo ""
           echo "════════════════════════════════════════════════════════"
+          echo "── HEDEF SÜRÜM: 1.21.111 = protocol 844 (attach ile  ──"
+          echo "── aynı build: sha256 69f6584c…). Bu YOK ise oyun    ──"
+          echo "── 1.21.111 ile relay'e bağlanamaz.                  ──"
+          echo "════════════════════════════════════════════════════════"
+          for v in 819 827 844 859 860 897; do
+            if find relay/Protocol/bedrock-codec -iname "Bedrock_v${v}.*" | grep -q .; then
+              echo "  [VAR]  v${v}"
+            else
+              echo "  [YOK]  v${v}"
+            fi
+          done
+          echo ""
+          echo "── assets (definition dosyaları, 844 için şart) ──"
+          for f in app/src/main/assets/nbt/block_palette_v844.nbt app/src/main/assets/nbt/runtime_item_statesv844.json; do
+            if [ -f "$f" ]; then echo "  [VAR]  $f ($(stat -c%s "$f") bytes)"; else echo "  [YOK]  $f"; fi
+          done
+
+          echo ""
+          echo "════════════════════════════════════════════════════════"
           echo "── KRİTİK KONTROL: 2b2tpe.org protocol=944 istiyor.     ──"
           echo "════════════════════════════════════════════════════════"
           for v in 898 924 935 944 948 975; do
@@ -91,3 +113,26 @@ jobs:
           name: OxClient-release-${{ github.sha }}
           path: app/build/outputs/apk/release/*.apk
           retention-days: 90
+
+      # ── Oynanabilir indirme linki ────────────────────────────────────────
+      # Artifact'lar giriş istiyor ve süresi doluyor; playtest için sabit bir
+      # tag'e imzalı release APK'sını bırakıyoruz. Her main build'inde üzerine
+      # yazar (--clobber), yani link hep aynı kalır:
+      #   https://github.com/Alextheplayer919/Eclient/releases/download/
+      #     playtest-1.21.111/Eclient-playtest-1.21.111.apk
+      - name: Publish playtest release (stable download link)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="playtest-1.21.111"
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          echo "publishing $APK as $TAG"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "Eclient playtest — Minecraft 1.21.111 (protocol 844)" \
+              --notes "Signed release APK for the 1.21.111 target. Refreshed on every main build; the download link never changes."
+          fi
+          gh release upload "$TAG" "$APK#Eclient-playtest-1.21.111.apk" --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name'

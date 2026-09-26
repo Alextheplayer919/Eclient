@@ -43,6 +43,14 @@ class RubidiumClientApp : Application() {
             } catch (e: Exception) {
                 Log.e(TAG, "Definitions load error: ${e.message}", e)
             }
+            // Which game version this build targets and whether its codec + the
+            // definition files actually resolved. Logged at startup so a playtest
+            // does not need adb: baba.txt says target/resolved/exact right away.
+            try {
+                com.rubidiumclient.core.relay.TargetVersion.verify()
+            } catch (e: Exception) {
+                Log.e(TAG, "TargetVersion check error: ${e.message}", e)
+            }
         }, "RubidiumDefinitionsLoader").apply {
             isDaemon = true
             start()
