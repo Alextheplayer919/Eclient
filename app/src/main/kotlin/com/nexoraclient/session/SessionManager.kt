@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import com.rubidiumclient.core.relay.TargetVersion
+import com.rubidiumclient.core.relay.MinecraftLink
+import com.rubidiumclient.utils.DiagLog
 
 object SessionManager {
 
@@ -49,6 +51,28 @@ object SessionManager {
 
     private var relay: RubidiumRelay? = null
 
+    /**
+     * How long the relay waits for the game before saying so.
+     *
+     * The failure this exists for: the player starts the relay, joins their server
+     * by typing its real address in the Servers tab, and every module looks broken —
+     * because the game never connected to the relay and no packet reaches us. It is
+     * not a module bug, it is a wiring mistake, and it should say that in words.
+     */
+    private val relayWatchJob = java.util.concurrent.atomic.AtomicReference<kotlinx.coroutines.Job?>(null)
+
+    private fun watchForClient() {
+        relayWatchJob.get()?.cancel()
+        relayWatchJob.set(ioScope.launch {
+            kotlinx.coroutines.delay(WAIT_FOR_GAME_MS)
+            if (_sessionCount.value == 0 && _isActive.value) {
+                _statusMessage.value = com.rubidiumclient.core.relay.MinecraftLink.waitingHint()
+            }
+        })
+    }
+
+    private const val WAIT_FOR_GAME_MS = 20_000L
+
     fun start() {
         if (_isActive.value) { return }
 
@@ -61,6 +85,16 @@ object SessionManager {
         val host      = ServerConfig.getHostBlocking()
         val port      = ServerConfig.getPortBlocking()
         val localPort = ServerConfig.LOCAL_PROXY_PORT
+
+        // Pointing the relay AT ITSELF is a silent loop: the relay would dial
+        // 127.0.0.1:19150, which is the relay. Say so instead of hanging.
+        if (MinecraftLink.isRelayAddress(host, port)) {
+            _statusMessage.value =
+                "Relay target is the relay itself (${MinecraftLink.relayAddress()}). " +
+                    "Set the REAL server address here; the game joins the relay from the Servers tab."
+            DiagLog.log(TAG, "refusing self-targeting relay configuration")
+            return
+        }
 
         _statusMessage.value = "Bağlanıyor..."
 
@@ -76,10 +110,12 @@ object SessionManager {
 
             relay                = r
             _isActive.value      = true
+            watchForClient()
             _connectedHost.value = host
             _connectedPort.value = port
             _statusMessage.value = "Aktif — $host:$port"
             _sessionCount.value  = 0
+            relayWatchJob.get()?.cancel()   // the game is in the path; stop warning
 
         } catch (e: Exception) {
             _isActive.value      = false

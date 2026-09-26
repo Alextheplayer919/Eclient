@@ -37,6 +37,16 @@ class RubidiumClientApp : Application() {
         MicrosoftAuthManager.init(applicationContext)
         FriendManager.init(applicationContext)
 
+        // Engine selection: if the patched build is installed and its in-game agent
+        // is answering, the app switches to memory mode (no relay, no second
+        // connection). On a stock device the probe fails and PROXY stays active —
+        // exactly the shipped behaviour. Never blocks, never throws.
+        try {
+            com.rubidiumclient.agent.AgentRuntime.autoStart(applicationContext)
+        } catch (t: Throwable) {
+            Log.e(TAG, "agent probe error: ${t.message}", t)
+        }
+
         Thread({
             try {
                 Definitions.init(applicationContext)

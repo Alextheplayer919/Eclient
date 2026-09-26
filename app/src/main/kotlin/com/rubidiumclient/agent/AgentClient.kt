@@ -134,6 +134,55 @@ class AgentClient(
         onState?.invoke(this)
     }
 
+    // -------------------------------------------------------------- probe ---
+
+    companion object {
+        /**
+         * One-shot liveness + pairing check: connect, ask for state, confirm the
+         * agent answered with a state push (i.e. it accepted our token), then hang
+         * up. Never throws — a stock device simply has no agent listening, and that
+         * is a normal outcome, not an error.
+         *
+         * Deliberately NOT used to keep a connection: the real client starts only
+         * after this says yes, so the app never runs two engines at once.
+         */
+        fun probe(
+            token: String,
+            host: String = "127.0.0.1",
+            port: Int = 38170,
+            timeoutMs: Long = 2500L,
+        ): Boolean {
+            return try {
+                val s = Socket()
+                s.tcpNoDelay = true
+                s.connect(InetSocketAddress(host, port), timeoutMs.toInt())
+                s.soTimeout = timeoutMs.toInt()
+                val w = BufferedWriter(OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8))
+                val id = 1L
+                val req = JSONObject()
+                    .put("token", token).put("id", id).put("op", "getState")
+                w.write(req.toString()); w.newLine(); w.flush()
+
+                val r = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
+                var ok = false
+                val deadline = System.currentTimeMillis() + timeoutMs
+                while (System.currentTimeMillis() < deadline) {
+                    val line = r.readLine() ?: break
+                    val o = runCatching { JSONObject(line) }.getOrNull() ?: continue
+                    if (o.optString("push") == "state") { ok = true; break }
+                    if (o.has("id") && !o.optBoolean("ok", true)) {
+                        DiagLog.log("agent", "probe rejected: ${o.optString("reason")}")
+                        break
+                    }
+                }
+                runCatching { s.close() }
+                ok
+            } catch (t: Throwable) {
+                false
+            }
+        }
+    }
+
     // ------------------------------------------------------------ intents ---
 
     fun request(op: String, body: JSONObject.() -> Unit = {}): Boolean {
