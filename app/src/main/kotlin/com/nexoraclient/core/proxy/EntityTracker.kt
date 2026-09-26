@@ -807,6 +807,114 @@ private fun handleAuthInput(p: PlayerAuthInputPacket, dir: PacketEvent.Direction
     fun playerCount()  = playerCounter.get()
     fun hostileCount() = hostileCounter.get()
 
+    // ── Memory mode: ingest from the in-game agent (docs/MERGE_PLAN.md P1) ────
+    //
+    // This is the ONE additive entry point the whole merge rests on. 69 of 81
+    // modules read this singleton rather than the network, so feeding it from
+    // memory is what makes those modules work in memory mode without a single
+    // edit to their code. The packet path (handleAddEntity/handleAddPlayer/...)
+    // is untouched and keeps feeding the same map when the app is in PROXY mode.
+    //
+    // Only the agent feed calls this, and only in MEMORY mode: two writers on one
+    // map would produce a world that is half packet-state and half memory-state.
+
+    /** Self state as the agent reports it (feet frame). */
+    data class RemoteSelf(
+        val x: Float, val y: Float, val z: Float,
+        val yaw: Float, val pitch: Float,
+        val health: Float, val onGround: Boolean, val damaged: Boolean,
+    )
+
+    /** One actor as the agent reports it: already filtered, already masked. */
+    data class RemoteActor(
+        val runtimeId: Long,
+        val isPlayer: Boolean,
+        val x: Float, val y: Float, val z: Float,
+        val health: Float,
+        val hurt: Boolean,
+    )
+
+    /** Entries the memory feed owns, so it can never delete packet-path entities. */
+    private val agentManaged = ConcurrentHashMap.newKeySet<Long>()
+
+    /** Consecutive ingests an agent-managed entity was missing from (~3 s at 20 Hz). */
+    private val agentMissing = ConcurrentHashMap<Long, Int>()
+
+    private const val AGENT_DESPAWN_INGESTS = 60
+
+    fun ingest(self: RemoteSelf, actors: List<RemoteActor>) {
+        val now = System.currentTimeMillis()
+
+        // ── self ──
+        selfPrevY     = selfY            // fall-damage consumers need the previous Y
+        selfX         = self.x
+        selfY         = self.y
+        selfZ         = self.z
+        selfYaw       = self.yaw
+        selfPitch     = self.pitch
+        selfHealth    = self.health.coerceAtLeast(0f)
+        selfOnGround  = self.onGround
+        // botSelf() reports the actor's own position; treat it as the feet frame
+        // unless the parity test against the packet path says otherwise (the flag
+        // exists precisely so consumers normalize instead of guessing).
+        selfYFrameIsEye = false
+        _selfHealthFlow.value = selfHealth
+
+        // ── actors ──
+        val seen = HashSet<Long>(actors.size * 2)
+        for (a in actors) {
+            seen.add(a.runtimeId)
+            val existing = entities[a.runtimeId]
+            if (existing == null) {
+                val e = TrackedEntity(
+                    runtimeId  = a.runtimeId,
+                    uniqueId   = 0L,                       // unknown from memory
+                    identifier = if (a.isPlayer) "minecraft:player" else "",
+                    type       = if (a.isPlayer) EntityType.PLAYER else EntityType.UNKNOWN,
+                    x = a.x, y = a.y, z = a.z,
+                    health = a.health,
+                )
+                e.lastUpdateMs = now
+                if (a.hurt) { e.hurtTime = HURT_TICKS; e.lastHurtMs = now }
+                entities[a.runtimeId] = e
+                agentManaged.add(a.runtimeId)
+                trackAdd(e)
+            } else {
+                existing.prevX = existing.x
+                existing.prevY = existing.y
+                existing.prevZ = existing.z
+                existing.x = a.x
+                existing.y = a.y
+                existing.z = a.z
+                existing.health = a.health
+                existing.lastUpdateMs = now
+                if (a.hurt) { existing.hurtTime = HURT_TICKS; existing.lastHurtMs = now }
+                else if (existing.hurtTime > 0) existing.hurtTime -= 1
+            }
+            agentMissing.remove(a.runtimeId)
+        }
+
+        // ── despawn: only entries this feed created, only after a grace period,
+        //    because botScan's range (<=32 m) means "absent" also means "walked
+        //    away" — and flickering entities in and out of ESP would be worse
+        //    than a three-second lag on a real despawn.
+        for (rid in agentManaged) {
+            if (rid in seen) continue
+            val missed = (agentMissing[rid] ?: 0) + 1
+            if (missed < AGENT_DESPAWN_INGESTS) {
+                agentMissing[rid] = missed
+            } else {
+                agentMissing.remove(rid)
+                agentManaged.remove(rid)
+                entities.remove(rid)?.let { trackRemove(it) }
+            }
+        }
+
+        notifyUpdate()
+    }
+
+    private const val HURT_TICKS = 10
+
     fun removeStale(maxAgeMs: Long = 30_000L) {
         val cutoff = System.currentTimeMillis() - maxAgeMs
         val stale  = entities.entries.filter { it.value.lastUpdateMs < cutoff }
