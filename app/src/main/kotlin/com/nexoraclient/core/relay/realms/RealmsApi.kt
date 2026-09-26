@@ -9,6 +9,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import com.rubidiumclient.core.relay.TargetVersion
 
 data class RealmInfo(
     val id: Long,
@@ -37,7 +38,7 @@ data class RealmAddress(
 object RealmsApi {
 
     private const val BASE           = "https://pocket.realms.minecraft.net"
-    private const val CLIENT_VERSION = "1.21.60" // aktif codec'in minecraftVersion'ıyla senkron tut
+    private const val CLIENT_VERSION = TargetVersion.MC_VERSION // tek kaynak: hedeflenen sürüm
     private const val USER_AGENT     = "MCPE/UWP"
 
     class RealmsException(message: String, val httpCode: Int = -1) : Exception(message)

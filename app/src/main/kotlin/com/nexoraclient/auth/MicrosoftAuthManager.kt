@@ -18,6 +18,7 @@ import java.security.interfaces.ECPrivateKey
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.util.concurrent.TimeUnit
+import com.rubidiumclient.core.relay.TargetVersion
 
 object MicrosoftAuthManager {
 
@@ -417,7 +418,7 @@ object MicrosoftAuthManager {
             .header("Content-Type",   "application/json")
             .header("Accept",         "application/json")
             .header("User-Agent",     "MCPE/UWP")
-            .header("client-version", "1.21.80")
+            .header("client-version", TargetVersion.MC_VERSION)
             .build()
 
         val responseText = http.newCall(req).execute().use { resp ->

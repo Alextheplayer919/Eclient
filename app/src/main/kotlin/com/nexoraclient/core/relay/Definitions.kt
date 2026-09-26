@@ -140,6 +140,22 @@ object Definitions {
         }
     }
 
+    /**
+     * Diagnostics: which data files a given protocol resolves to, and whether the
+     * exact version exists or a fallback was used. Exists so "does this build
+     * really support 1.21.111?" is answerable from the device log instead of by
+     * reading this file.
+     */
+    fun describeClosest(protocolVersion: Int): String {
+        val versions = sortedVersions.toList()
+        val exact = versions.contains(protocolVersion)
+        val chosen = versions.firstOrNull { it <= protocolVersion } ?: versions.lastOrNull()
+        val pair = chosen?.let { fileMap[it] }
+        return "definitions: exact=$exact chosen=v${chosen ?: -1} " +
+            "block=${pair?.blockFile ?: "?"} item=${pair?.itemFile ?: "?"} " +
+            "known=${versions.take(6).joinToString(",")}"
+    }
+
     fun getClosestDefinitions(protocolVersion: Int): VersionedDefinitions {
         loadedCache[protocolVersion]?.let { return it }
 

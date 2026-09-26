@@ -64,6 +64,10 @@ class AutoCodecListener(private val relay: RubidiumRelay? = null) : RubidiumPack
             session.clientSession.codec = codec
             session.activeCodec = codec
 
+            // Per-client truth: this is the version the game actually speaks, which
+            // may differ from the relay's advertised target (TargetVersion).
+            DiagLog.log(TAG, "negotiated: client=$protocol -> codec ${codec.protocolVersion} (${codec.minecraftVersion})")
+
             val defs = Definitions.getClosestDefinitions(codec.protocolVersion)
             session.clientSession.peer.codecHelper.apply {
                 itemDefinitions         = defs.itemDefinitions

@@ -25,7 +25,14 @@ class RubidiumRelay(
         private const val PONG_MOTD     = "rubidium"
         private const val PONG_SUB_MOTD = "RubidiumClient"
 
-        val RELAY_CODEC: BedrockCodec by lazy { CodecRegistry.getLatestCodec() }
+        /**
+         * The codec this relay presents itself with before it has seen a client:
+         * the version this build targets (TargetVersion), NOT the newest codec the
+         * vendored library happens to contain. Per-session negotiation in
+         * AutoCodecListener still gives every client its own codec; this only
+         * fixes what the advertisement and the pre-negotiation default claim.
+         */
+        val RELAY_CODEC: BedrockCodec by lazy { TargetVersion.codec }
     }
 
     @Volatile private var running      = false
@@ -57,11 +64,16 @@ class RubidiumRelay(
         this.remoteHost = remoteHost
         this.remotePort = remotePort
 
+        // Which game version this build claims to be, and whether the codec for it
+        // actually resolved. One line per capture in baba.txt, so "does the proxy
+        // really support 1.21.111?" is answerable on the device.
+        TargetVersion.verify()
+
         bossGroup   = NioEventLoopGroup(1)
         workerGroup = NioEventLoopGroup(4)
 
         try {
-            val pong = buildPong(RELAY_CODEC.protocolVersion, RELAY_CODEC.minecraftVersion ?: "1.21.60")
+            val pong = buildPong(RELAY_CODEC.protocolVersion, RELAY_CODEC.minecraftVersion ?: TargetVersion.MC_VERSION)
 
             val future = ServerBootstrap()
                 .channelFactory(RakChannelFactory.server(NioDatagramChannel::class.java))
@@ -112,7 +124,7 @@ class RubidiumRelay(
                 motd            = PONG_MOTD,
                 subMotd         = PONG_SUB_MOTD,
                 protocolVersion = RELAY_CODEC.protocolVersion,
-                mcVersion       = RELAY_CODEC.minecraftVersion ?: "1.21.60",
+                mcVersion       = RELAY_CODEC.minecraftVersion ?: TargetVersion.MC_VERSION,
                 maxPlayers      = 10
             )
 

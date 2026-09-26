@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import com.rubidiumclient.core.relay.TargetVersion
 
 object SessionManager {
 
@@ -120,7 +121,7 @@ object SessionManager {
 
         LanBroadcaster.updateInfo(
             protocolVersion = RubidiumRelay.RELAY_CODEC.protocolVersion,
-            mcVersion       = RubidiumRelay.RELAY_CODEC.minecraftVersion ?: "1.21.60",
+            mcVersion       = RubidiumRelay.RELAY_CODEC.minecraftVersion ?: TargetVersion.MC_VERSION,
             playerCount     = 0
         )
 

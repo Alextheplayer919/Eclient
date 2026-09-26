@@ -31,7 +31,7 @@ object LanBroadcaster {
     @Volatile private var motd           : String = "NoxeraClient"
     @Volatile private var subMotd        : String = "NoxeraClient"
     @Volatile private var protocolVersion: Int    = 748
-    @Volatile private var mcVersion      : String = "1.21.60"
+    @Volatile private var mcVersion      : String = TargetVersion.MC_VERSION
     @Volatile private var playerCount    : Int    = 0
     @Volatile private var maxPlayers     : Int    = 10
 
