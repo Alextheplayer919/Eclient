@@ -126,13 +126,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+          set -e
           TAG="playtest-1.21.111"
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
-          echo "publishing $APK as $TAG"
+          # Stage under the final name: gh's file#name rename does not always
+          # take, and the download link must be stable and readable.
+          STAGE="$(mktemp -d)/Eclient-playtest-1.21.111.apk"
+          cp "$APK" "$STAGE"
+          echo "publishing $APK -> Eclient-playtest-1.21.111.apk ($(stat -c%s "$STAGE") bytes)"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --title "Eclient playtest — Minecraft 1.21.111 (protocol 844)" \
-              --notes "Signed release APK for the 1.21.111 target. Refreshed on every main build; the download link never changes."
+              --notes "Signed release APK for the 1.21.111 target. Refreshed on every main build; the download link never changes.  \n\nInstall over any previous playtest build: same signature, so config survives.  \n\nStock Minecraft 1.21.111 + this app = proxy mode (relay on 127.0.0.1:19150, advertised on LAN as 'rubidium'). See docs/PLAYTEST.md."
           fi
-          gh release upload "$TAG" "$APK#Eclient-playtest-1.21.111.apk" --clobber
-          gh release view "$TAG" --json assets --jq '.assets[].name'
+          gh release upload "$TAG" "$STAGE" --clobber
+          echo "── assets now ──"
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes"'
