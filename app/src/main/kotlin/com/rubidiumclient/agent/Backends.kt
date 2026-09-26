@@ -101,8 +101,9 @@ class AgentBackend(private val c: AgentClient) : Backend {
 
     override fun attack(entityId: Int) { c.attack(entityId) }
     override fun setRotation(yaw: Float, pitch: Float) { c.setRotation(yaw, pitch) }
-    override fun setInput(forward: Float, strafe: Float, jump: Boolean, sneak: Boolean) =
-        c.setInput(forward, strafe, jump, sneak)
+    override fun setInput(forward: Float, strafe: Float, jump: Boolean, sneak: Boolean) {
+        c.setInput(forward, strafe, jump, sneak)   // request() returns Boolean; the interface is Unit
+    }
 
     override fun toggleModule(name: String, enabled: Boolean) { c.toggleModule(name, enabled) }
     override fun setSetting(module: String, setting: String, value: Any) { c.setSetting(module, setting, value) }

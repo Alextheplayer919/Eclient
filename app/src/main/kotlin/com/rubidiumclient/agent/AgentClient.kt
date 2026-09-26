@@ -36,6 +36,9 @@ class AgentClient(
     @Volatile var missing: Set<Cap> = emptySet(); private set
     @Volatile var lastPushAt: Long = 0L; private set
     @Volatile var connected: Boolean = false; private set
+    /** Source name for panels: "agent" while connected, otherwise why not. */
+    val name: String get() = if (connected) "agent" else "agent(offline)"
+
     @Volatile var lastError: String = ""; private set
 
     /** Last refusal the agent sent, surfaced so a dead module is never a mystery. */
