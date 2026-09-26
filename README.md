@@ -13,6 +13,30 @@ Release builds ship as `OxClient-*.apk` (internal app name).
 
 ---
 
+## 🎯 Target version (1.21.111 / protocol 844)
+
+This build targets **Minecraft Bedrock 1.21.111, protocol 844** — the same build
+the attach runtime is pinned to, so the proxy and the in-game runtime describe the
+same game version. One file owns the target: `core/relay/TargetVersion.kt`.
+
+What that means in practice:
+
+* **The relay introduces itself as 1.21.111.** The RakNet advertisement, the LAN
+  pong and the session's pre-negotiation default all come from `TargetVersion`.
+  They used to come from `CodecRegistry.getLatestCodec()` — the newest codec the
+  vendored library contains — which made a 1.21.111 client ping a server that
+  claimed to be 1.26.50.
+* **Every client still negotiates its own codec.** `AutoCodecListener` reads the
+  client's `RequestNetworkSettings` and picks the matching codec, item
+  definitions and block palette for that protocol, so 1.21.111, 1.21.130 or 1.26.x
+  clients all work against the same relay. The target only decides what the relay
+  claims before it has seen a client.
+* **Support is checkable, not assumed.** On every capture the log gets
+  `target=1.21.111(protocol 844) resolved=…(protocol …) exact=true/false`, the
+  definitions files actually chosen, and — per session — the negotiated result
+  `client=<n> -> codec <n> <version>`. If the vendored library ever lacks 844, the
+  fallback is logged as a warning instead of showing up later as packet errors.
+
 ## 🎮 Features
 
 ### ⌨️ In-game command system (prefix `.`)
