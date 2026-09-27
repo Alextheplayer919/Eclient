@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
+import android.provider.Settings
 import android.os.IBinder
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
@@ -51,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -93,6 +95,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     companion object {
         private const val CHANNEL_ID = "ox_overlay"
         private const val NOTIF_ID   = 1002
+        private const val TAG        = "EClientOverlay"
 
         fun start(ctx: Context) {
             val i = Intent(ctx, OverlayService::class.java)
@@ -137,8 +140,12 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         }
     }
 
+    private var blockedLogged = false
+    private var retries = 0
+    private val RETRY_LOG_AT = 4
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIF_ID, buildNotif())
+        startForeground(NOTIF_ID, buildNotif(if (mayDrawOverlays()) "HUD aktif" else "Overlay blocked — allow \"Display over other apps\"", ongoing = true))
         showOverlay()
         lcReg.currentState = Lifecycle.State.RESUMED
         OverlayState.setOverlayVisible(true)
@@ -160,6 +167,25 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     private fun startStatsPoller() {
         serviceScope.launch {
             while (true) {
+                // Self-heal: the first attach can fail because the permission
+                // was granted after the service started, because the process was
+                // recreated, or because a window was removed by the system.
+                // Nothing else calls showOverlay() again, so without this the
+                // overlay stayed missing for the rest of the session.
+                if (!isAttached) {
+                    // Throttled: an addView that keeps failing must not spin a
+                    // view-creation loop 2x/second. Every 6th pass = ~3 s.
+                    if (retries % 6 == 0) showOverlay()
+                    if (!isAttached) retries++
+                    if (retries == RETRY_LOG_AT) {
+                        android.util.Log.w(TAG, "overlay still not attached after $retries attempts" +
+                            if (!mayDrawOverlays()) " (permission not granted)" else " (addView keeps failing — see the logged exception)")
+                    }
+                } else if (retries != 0) {
+                    retries = 0
+                    blockedLogged = false
+                }
+
                 OverlayState.updateActiveModuleCount(ModuleManager.enabledCount())
                 val invSnapshot = EntityTracker.getInventorySnapshot()
                 val totemCount = invSnapshot.count { (slot, item) ->
@@ -224,8 +250,39 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         }
     }
 
+    /**
+     * True when this app may draw over other apps.
+     *
+     * TYPE_APPLICATION_OVERLAY needs SYSTEM_ALERT_WINDOW. When it is missing,
+     * every wm.addView() below throws SecurityException — and those calls used
+     * to be wrapped in `catch (_: Exception) {}`, so the overlay was silently
+     * absent: a running foreground service, a notification, and no clickgui,
+     * with nothing anywhere saying why. Check it up front instead, say so out
+     * loud, and retry automatically once the user grants it.
+     */
+    private fun mayDrawOverlays(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
+
+    private fun onOverlayBlocked() {
+        if (blockedLogged) return
+        blockedLogged = true
+        android.util.Log.w(TAG, "overlay blocked: SYSTEM_ALERT_WINDOW not granted — the FAB and menu cannot be added until \"Display over other apps\" is allowed for $packageName")
+        // Make it visible outside logcat too: the notification is the only thing
+        // the user sees while the overlay is unavailable.
+        runCatching {
+            NotificationManagerCompat.from(this).notify(
+                NOTIF_ID,
+                buildNotif("Overlay blocked — allow \"Display over other apps\"", ongoing = true)
+            )
+        }
+    }
+
     private fun showOverlay() {
         if (isAttached) return
+        if (!mayDrawOverlays()) {
+            onOverlayBlocked()
+            return   // the retry loop in startStatsPoller() picks it up once granted
+        }
         try {
             val espParams = overlayParams(
                 android.view.WindowManager.LayoutParams.MATCH_PARENT,
@@ -297,7 +354,16 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             refreshShortcuts()
             refreshCommandShortcuts()
             isAttached = true
-        } catch (_: Exception) {}
+            blockedLogged = false
+            retries = 0
+            android.util.Log.i(TAG, "overlay attached: FAB + HUD + ESP are live")
+        } catch (e: Exception) {
+            // Never silent again: this is the line that would have answered
+            // "the clickgui doesn't show up" the first time it was asked.
+            android.util.Log.e(TAG, "overlay attach failed (${e.javaClass.simpleName}: ${e.message})" +
+                if (!mayDrawOverlays()) " — SYSTEM_ALERT_WINDOW is not granted" else "", e)
+            onOverlayBlocked()
+        }
     }
 
     private fun refreshShortcuts() {
@@ -475,13 +541,29 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         }
     }
 
-    private fun buildNotif() = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setSmallIcon(R.mipmap.ic_rubidium_logo)
-        .setContentTitle("Eclient Overlay")
-        .setContentText("HUD aktif")
-        .setOngoing(true)
-        .setPriority(NotificationCompat.PRIORITY_MIN)
-        .build()
+    private fun buildNotif(text: String = "HUD aktif", ongoing: Boolean = true) =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_rubidium_logo)
+            .setContentTitle("Eclient Overlay")
+            .setContentText(text)
+            .setOngoing(ongoing)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            // Tapping the notification opens the dashboard, which is where the
+            // "Overlay Permission Required" banner and the Disconnect button
+            // live. Without this, a blocked overlay gave the user a
+            // notification and no route to the fix.
+            .setContentIntent(openDashboardIntent())
+            .build()
+
+    private fun openDashboardIntent(): android.app.PendingIntent? = runCatching {
+        android.app.PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, com.rubidiumclient.ui.dashboard.DashboardActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+    }.getOrNull()
 }
 
 object VolumeToggleBus {

@@ -260,6 +260,13 @@ class DashboardActivity : ComponentActivity() {
     }
 
     private fun startRelay(targetPkg: String) {
+        // Ask for the overlay permission up front. The service refuses to
+        // attach without it (by design — a silent failure was the old bug), and
+        // the user is standing right here where the banner is, rather than in
+        // the game wondering why no clickgui appeared.
+        if (!Settings.canDrawOverlays(this)) {
+            requestOverlayPermission()
+        }
         stopRelay()
         EntityTracker.init()
 
@@ -296,7 +303,19 @@ class DashboardActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopRelay()
+        // The relay and the in-game overlay deliberately OUTLIVE this activity.
+        //
+        // This used to call stopRelay(), which stopped SessionManager AND
+        // OverlayService — so the moment the dashboard was destroyed the
+        // clickgui vanished: leaving the app to play, pressing Back, a rotation
+        // (onDestroy fires on configuration change too), or Android reclaiming
+        // a background activity while a 300 MB game runs in the foreground.
+        // That is why the overlay "never showed up": it was being torn down
+        // right after being started.
+        //
+        // The foreground service is what keeps this process (and therefore the
+        // in-process relay) alive while the user plays, so it must keep running
+        // until the user explicitly disconnects.
     }
 
     private fun getInstalledGames(): List<Pair<String, String>> =
