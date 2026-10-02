@@ -129,3 +129,5 @@ the JSON parser's defensive behaviour, and the audit's verdicts. They run on eve
 * Persist the verified eye-frame result so proxy-only sessions benefit after one hybrid session.
 * A tap-to-calibrate wizard (fit FOV + eye height from a few taps) as a no-agent alternative.
 * Push `camera` at 60 Hz from the render thread if latency matters.
+* Link reliability, Android platform risks, native-side requirements and the blueprint for a memory-based
+  KillAura: `docs/BRIDGE.md`.
