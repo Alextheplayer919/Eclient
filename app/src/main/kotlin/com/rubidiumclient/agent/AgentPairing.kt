@@ -114,19 +114,30 @@ object AgentRuntime {
         private set
 
     /**
-     * Probe for the in-game agent on a background thread; if it answers, switch to
-     * memory mode (which attaches the EntityTracker feed). If it does not, PROXY
-     * stays active untouched — the shipped behaviour on a stock device.
+     * Legacy escape hatch. When false (the default) an answering agent is attached as a
+     * read-only sensor next to the relay (hybrid-lite). When true the old exclusive MEMORY
+     * mode is used instead: the agent feeds the tracker and the relay is expected to be unused.
+     */
+    @Volatile var preferMemory: Boolean = false
+
+    /**
+     * Probe for the in-game agent on a background thread; if it answers, attach it as a
+     * read-only sensor (HYBRID — or legacy MEMORY when [preferMemory] is set). If it does
+     * not answer, PROXY stays active untouched — the shipped behaviour on a stock device.
      */
     fun autoStart(ctx: Context) {
         val token = AgentPairing.token(ctx)
         Thread({
             try {
                 val found = AgentClient.probe(token)
-                if (found) {
-                    Backends.useAgent(token)          // starts the client + tracker feed
+                if (found && preferMemory) {
+                    Backends.useAgent(token)          // legacy: starts the client + tracker feed
                     engine = Backends.Mode.MEMORY
                     lastStatus = "agent connected (memory mode)"
+                } else if (found) {
+                    Backends.useAgentSensor(token)    // hybrid-lite: read-only sensor, packets keep state and actions
+                    engine = Backends.Mode.HYBRID
+                    lastStatus = "agent connected (hybrid-lite: read-only sensor)"
                 } else {
                     engine = Backends.Mode.PROXY
                     lastStatus = "no agent on 127.0.0.1:38170 (proxy mode)"
@@ -145,6 +156,5 @@ object AgentRuntime {
     }
 
     /** One line for the panel: which engine is live and why. */
-    fun statusLine(): String =
-        "engine=${if (engine == Backends.Mode.MEMORY) "memory" else "proxy"} ($lastStatus)"
+    fun statusLine(): String = "engine=${engine.name.lowercase()} ($lastStatus)"
 }

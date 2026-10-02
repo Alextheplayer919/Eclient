@@ -24,6 +24,11 @@ enum class Cap {
     Attack,      // swing at an actor id
     Rotation,    // write own yaw / pitch (aim)
     MoveInput,   // write joystick input (walking)
+
+    // ---- hybrid-lite sensor capabilities (docs/HYBRID_LITE.md). Read-only. ----
+    CameraFov,     // the renderer's real vertical FOV (slider + sprint/speed effects)
+    CameraPose,    // camera position + rotation + perspective mode
+    CameraMatrix,  // the full view-projection matrix
 }
 
 data class Pose(

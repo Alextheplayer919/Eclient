@@ -1,5 +1,6 @@
 package com.rubidiumclient.agent
 
+import com.rubidiumclient.utils.CameraFrame
 import com.rubidiumclient.utils.DiagLog
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,6 +35,8 @@ class AgentClient(
     @Volatile var inventoryList: List<Item> = emptyList(); private set
     @Volatile var caps: Set<Cap> = emptySet(); private set
     @Volatile var missing: Set<Cap> = emptySet(); private set
+    /** Hybrid-lite camera report; null while the agent has not derived any camera data. */
+    @Volatile var camera: CameraFrame? = null; private set
     @Volatile var lastPushAt: Long = 0L; private set
     @Volatile var connected: Boolean = false; private set
     /** Source name for panels: "agent" while connected, otherwise why not. */
@@ -129,6 +132,7 @@ class AgentClient(
         }
         entityList = obj.optJSONArray("entities")?.mapEntities() ?: emptyList()
         inventoryList = obj.optJSONArray("inventory")?.mapItems() ?: emptyList()
+        camera = obj.optJSONObject("camera")?.let { CameraFrameParser.parse(it, lastPushAt) }
         caps = obj.optJSONArray("caps")?.mapCaps() ?: emptySet()
         missing = obj.optJSONArray("missing")?.mapCaps() ?: emptySet()
         onState?.invoke(this)

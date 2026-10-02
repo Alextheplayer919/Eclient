@@ -1,5 +1,7 @@
 package com.rubidiumclient.agent
 
+import com.rubidiumclient.utils.DiagLog
+
 /**
  * `Backends.active` is the one thing module code touches.
  *
@@ -10,6 +12,13 @@ package com.rubidiumclient.agent
  * The proxy path (`PacketBackend`) keeps working untouched: it is the packets
  * that feed EntityTracker today, and this mode switch is additive — memory mode
  * has to be selected, never assumed.
+ *
+ * Modes (docs/HYBRID_LITE.md):
+ *   PROXY  - stock Minecraft + the relay. No agent.
+ *   HYBRID - the relay is the brain (state, actions, movement) AND the agent is attached as a
+ *            read-only sensor (camera + ground-truth audit). Nothing from the agent writes the
+ *            tracker, so both can run at once. This is the default when an agent answers.
+ *   MEMORY - legacy: no relay, the agent feeds the tracker and runs the actions. Opt-in only.
  */
 object Backends {
     @Volatile var active: Backend = NullBackend
@@ -18,10 +27,17 @@ object Backends {
     /** Which engine the app is on. PROXY is the shipped default until memory mode proves itself. */
     @Volatile var mode: Mode = Mode.PROXY
 
-    enum class Mode { PROXY, MEMORY }
+    enum class Mode { PROXY, MEMORY, HYBRID }
 
     private var client: AgentClient? = null
     private var feed: AgentTrackerFeed? = null
+
+    /** Hybrid-lite only: the read-only sensor feed (camera + audit). */
+    @Volatile var sensorFeed: SensorFeed? = null
+        private set
+
+    /** The ground-truth audit of the packet path; null unless an agent is attached in HYBRID mode. */
+    val audit: SensorAudit? get() = sensorFeed?.audit
 
     /**
      * Switch to memory mode: connect to the in-game agent and feed EntityTracker
@@ -39,6 +55,24 @@ object Backends {
         c.start()
         active = AgentBackend(c)
         mode = Mode.MEMORY
+        return c
+    }
+
+    /**
+     * Hybrid-lite: attach the agent as a READ-ONLY sensor. The packet path keeps owning the world
+     * model, the actions and the movement; the agent only supplies the camera and a ground-truth
+     * audit. Safe to run together with the relay — nothing here writes EntityTracker.
+     */
+    fun useAgentSensor(token: String, host: String = "127.0.0.1", port: Int = 38170): AgentClient {
+        stopAgent()
+        val c = AgentClient(token, host, port)
+        val f = SensorFeed(c, SensorAudit({ DiagLog.log("audit", it) })).also { it.attach() }
+        client = c
+        sensorFeed = f
+        c.start()
+        active = NullBackend            // actions stay in the proxy: the agent is a sensor, not a backend
+        mode = Mode.HYBRID
+        DiagLog.log("agent", "hybrid-lite: agent attached as a read-only sensor (packets own state and actions)")
         return c
     }
 
@@ -61,15 +95,21 @@ object Backends {
 
     fun stopAgent() {
         feed?.detach()
+        sensorFeed?.detach()
         client?.stop()
         feed = null
+        sensorFeed = null
         client = null
     }
 
     /** Panel line: which engine, is it alive, what can it do. */
-    fun statusLine(): String = when (val b = active) {
-        is AgentBackend -> "memory(${b.name}) caps=${b.caps.joinToString(",").ifEmpty { "none" }}"
-        else -> "${mode.name.lowercase()}(${b.name})"
+    fun statusLine(): String = when {
+        mode == Mode.HYBRID -> "hybrid " + (sensorFeed?.statusLine() ?: "sensor=offline")
+        active is AgentBackend -> {
+            val b = active as AgentBackend
+            "memory(${b.name}) caps=${b.caps.joinToString(",").ifEmpty { "none" }}"
+        }
+        else -> "${mode.name.lowercase()}(${active.name})"
     }
 }
 
