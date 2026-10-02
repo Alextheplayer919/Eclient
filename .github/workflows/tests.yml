@@ -1,0 +1,38 @@
+name: Unit tests
+
+# Runs the JVM unit tests (projection math, camera layering, agent JSON parser, audit).
+# Deliberately a separate workflow: it needs no secrets and never touches signing or the
+# playtest release, so a failing test can never block an APK build.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { java-version: '17', distribution: 'temurin', cache: gradle }
+      - run: chmod +x gradlew
+
+      - name: relay/Protocol present
+        run: test -f relay/Protocol/settings.gradle.kts
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Xmx4g"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report-${{ github.sha }}
+          path: app/build/reports/tests/testDebugUnitTest
+          retention-days: 14
