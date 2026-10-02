@@ -102,6 +102,9 @@ object Backends {
         client = null
     }
 
+    /** Link measurements of the sensor client (push rate, gaps, RTT, reconnects), or why there are none. */
+    fun bridgeLine(): String = sensorFeed?.bridgeLine() ?: "no agent client attached"
+
     /** Panel line: which engine, is it alive, what can it do. */
     fun statusLine(): String = when {
         mode == Mode.HYBRID -> "hybrid " + (sensorFeed?.statusLine() ?: "sensor=offline")

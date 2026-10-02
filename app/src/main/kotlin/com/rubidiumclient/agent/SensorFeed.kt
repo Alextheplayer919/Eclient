@@ -29,9 +29,16 @@ class SensorFeed(
         RenderCamera.eyeFrameVerified = false
     }
 
+    /** True while the link is live and the game tick is advancing. */
+    val isLive: Boolean get() = client.linkState == LinkState.LIVE
+
     /** Runs on the agent reader thread. Keep it short. */
     private fun onState(c: AgentClient) {
-        RenderCamera.sensor = c.camera      // null when the agent has not derived the camera: packets take over
+        // A paused or frozen game keeps re-sending its LAST snapshot (the bridge thread does not stop).
+        // That must never pass as a live camera, nor as ground truth for the audit.
+        val live = c.linkState == LinkState.LIVE
+        RenderCamera.sensor = if (live) c.camera else null   // null: packets take over
+        if (!live) return
 
         val me = c.pose ?: return
         audit.onSample(
@@ -46,6 +53,13 @@ class SensorFeed(
     fun statusLine(): String {
         val caps = client.caps.joinToString(",").ifEmpty { "none" }
         val missing = client.missing.joinToString(",").ifEmpty { "-" }
-        return "sensor=${client.name} camera=${RenderCamera.activeSource()} caps=[$caps] missing=[$missing]"
+        return "sensor=${client.name} link=${client.linkState} camera=${RenderCamera.activeSource()} caps=[$caps] missing=[$missing]"
+    }
+
+    /** The link measurements, for `.camera` and the log. */
+    fun bridgeLine(): String {
+        val proto = if (client.agentProto > 0 || client.agentBuild.isNotEmpty()) " proto=${client.agentProto} agent=${client.agentBuild.ifEmpty { "?" }}" else " proto=legacy"
+        val err = if (client.lastError.isNotEmpty() && client.linkState != LinkState.LIVE) " lastError=\"${client.lastError}\"" else ""
+        return "link=${client.linkState} ${client.health.summary()}$proto$err"
     }
 }

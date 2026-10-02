@@ -129,24 +129,31 @@ object AgentRuntime {
         val token = AgentPairing.token(ctx)
         Thread({
             try {
-                val found = AgentClient.probe(token)
-                if (found && preferMemory) {
-                    Backends.useAgent(token)          // legacy: starts the client + tracker feed
-                    engine = Backends.Mode.MEMORY
-                    lastStatus = "agent connected (memory mode)"
-                } else if (found) {
-                    Backends.useAgentSensor(token)    // hybrid-lite: read-only sensor, packets keep state and actions
-                    engine = Backends.Mode.HYBRID
-                    lastStatus = "agent connected (hybrid-lite: read-only sensor)"
+                if (preferMemory) {
+                    // Legacy: one probe decides the engine for this run.
+                    if (AgentClient.probe(token)) {
+                        Backends.useAgent(token)      // starts the client + tracker feed
+                        engine = Backends.Mode.MEMORY
+                        lastStatus = "agent connected (memory mode)"
+                    } else {
+                        engine = Backends.Mode.PROXY
+                        lastStatus = "no agent on 127.0.0.1:38170 (proxy mode)"
+                    }
                 } else {
-                    engine = Backends.Mode.PROXY
-                    lastStatus = "no agent on 127.0.0.1:38170 (proxy mode)"
+                    // Hybrid-lite: attach the sensor client RIGHT AWAY instead of probing once. The client keeps
+                    // retrying quietly (and reconnects after a game restart), so it does not matter whether the
+                    // user starts the app or the game first. A one-shot probe at app start would never see a
+                    // game that is launched afterwards. No agent running = harmless: one refused loopback
+                    // connect every few seconds.
+                    Backends.useAgentSensor(token)
+                    engine = Backends.Mode.HYBRID
+                    lastStatus = "sensor client started (waits for the in-game agent)"
                 }
             } catch (t: Throwable) {
-                lastStatus = "probe failed: ${t.message}"
+                lastStatus = "agent start failed: ${t.message}"
             }
             DiagLog.log(TAG, lastStatus)
-        }, "eclient-agent-probe").apply { isDaemon = true }.start()
+        }, "eclient-agent-start").apply { isDaemon = true }.start()
     }
 
     fun stop() {
