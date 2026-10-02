@@ -401,7 +401,10 @@ object ChatCommands : PacketEventBus.PacketListener {
                 "audit" -> {
                     val audit = Backends.audit
                     if (audit == null) say(s, "§b[Cam]§r no agent attached — nothing to audit against (needs the patched game running).")
-                    else say(s, "§b[Cam]§r " + audit.summary())
+                    else {
+                        say(s, "§b[Cam]§r " + audit.summary())
+                        say(s, "§7 bridge: ${Backends.bridgeLine()}")
+                    }
                 }
                 else -> {
                     val cam = RenderCamera.freshSensor()
@@ -413,6 +416,7 @@ object ChatCommands : PacketEventBus.PacketListener {
                         "tracker Y frame=${if (EntityTracker.selfYFrameIsEye) "eye" else "feet"} · applied=" +
                         RenderCamera.eyeFrameFixActive(EntityTracker.selfYFrameIsEye))
                     say(s, "§7 engine: ${Backends.statusLine()}")
+                    say(s, "§7 bridge: ${Backends.bridgeLine()}")
                 }
             }
         })
