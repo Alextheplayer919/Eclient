@@ -1,5 +1,6 @@
 package com.rubidiumclient.utils
 
+import com.rubidiumclient.core.proxy.EntityTracker
 import kotlin.math.*
 
 object MathUtil {
@@ -41,48 +42,21 @@ object MathUtil {
         return t * t * (3f - 2f * t)
     }
 
+    /**
+     * World → screen projection. Signature unchanged; the work is done by [RenderCamera], which
+     * prefers the in-game sensor (hybrid-lite) when one is attached and otherwise falls back to
+     * the original packet-based pinhole estimate ([Projector.pinhole]).
+     */
     fun worldToScreen(
         wx: Float, wy: Float, wz: Float,
         selfX: Float, selfY: Float, selfZ: Float,
         yaw: Float, pitch: Float,
         screenW: Int, screenH: Int,
         fov: Float = 110f
-    ): Pair<Float, Float>? {
-        val eyeY = selfY + 1.62f
-        val dx = (wx - selfX).toDouble()
-        val dy = (wy - eyeY).toDouble()
-        val dz = (wz - selfZ).toDouble()
-
-        val yawR   = Math.toRadians(-yaw.toDouble())
-        val pitchR = Math.toRadians(-pitch.toDouble())
-        val sinY = sin(yawR);  val cosY = cos(yawR)
-        val sinP = sin(pitchR); val cosP = cos(pitchR)
-
-        val rx0 = -dx * cosY + dz * sinY
-        val rz0 =  dx * sinY + dz * cosY
-        val rx  =  rx0
-        val ry  =  dy * cosP - rz0 * sinP
-        val rz  =  dy * sinP + rz0 * cosP
-
-        // FIX (yakın blok/hedef kayboluyor): 0.1 blok'luk near-clip eşiği,
-        // madencilik/yakın dövüş mesafesinde (oyuncu bloğa/hedefe neredeyse
-        // bitişikken rz kolayca 0.1'in altına düşüyor) çok agresifti — Xray'de
-        // "bloğa yaklaşınca ekrandan kayboluyor" şikayetinin sebebi buydu:
-        // worldToScreen null dönüyor, render radar-only moduna düşüyor.
-        // 0.02'ye düşürüldü; hâlâ kamera arkasını (rz<=0) ve bölme-sıfıra-
-        // yakın dejenere açıları filtreliyor ama gerçekçi yakın mesafede
-        // artık doğru render ediyor.
-        if (rz <= 0.02) return null
-
-        val aspect      = screenW.toDouble() / screenH.toDouble()
-        val tanHalfFovY = tan(Math.toRadians(fov / 2.0))
-        val tanHalfFovX = tanHalfFovY * aspect
-
-        val sx = (( rx / (rz * tanHalfFovX)) * (screenW / 2.0) + screenW / 2.0).toFloat()
-        val sy = ((-ry / (rz * tanHalfFovY)) * (screenH / 2.0) + screenH / 2.0).toFloat()
-
-        return Pair(sx, sy)
-    }
+    ): Pair<Float, Float>? = RenderCamera.project(
+        wx, wy, wz, selfX, selfY, selfZ, yaw, pitch, screenW, screenH, fov,
+        selfYIsEye = EntityTracker.selfYFrameIsEye,
+    )
 
     // FIX (KillAura/KillAuraPro "gereksiz lag" optimizasyonu): Multi-target
     // saldırıda aradaki duvarlardan bağımsız her hedefe paket gönderiliyordu.
