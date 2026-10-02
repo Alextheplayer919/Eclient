@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import com.rubidiumclient.RubidiumClientApp
+import com.rubidiumclient.agent.Backends
 import com.rubidiumclient.config.Config
 import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.core.relay.RubidiumRelaySession
@@ -17,6 +18,8 @@ import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleManager
 import com.rubidiumclient.module.misc.Schematica
 import com.rubidiumclient.utils.DiagLog
+import com.rubidiumclient.utils.GameFov
+import com.rubidiumclient.utils.RenderCamera
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -368,6 +371,50 @@ object ChatCommands : PacketEventBus.PacketListener {
             ".build status") { s, _ ->
             val schem = schematica(s) ?: return@Def
             say(s, "§b[Build]§r " + schem.cmdBuildStatus())
+        })
+
+        reg(Def("camera", ".camera [fix on|off|auto | fov <deg> | audit]", "general",
+            "Shows what the ESP projection is using (in-game sensor or packet estimate) and lets you flip " +
+                "the eye-height correction live, so you can compare the two by eye.",
+            ".camera fix on") { s, a ->
+            when (a.firstOrNull()?.lowercase()) {
+                "fix" -> {
+                    val mode = when (a.getOrNull(1)?.lowercase()) {
+                        "on"   -> RenderCamera.FrameFixMode.ON
+                        "off"  -> RenderCamera.FrameFixMode.OFF
+                        "auto" -> RenderCamera.FrameFixMode.AUTO
+                        else -> { say(s, "§c[Cmd]§r usage: .camera fix on|off|auto"); return@Def }
+                    }
+                    RenderCamera.frameFixMode = mode
+                    val active = RenderCamera.eyeFrameFixActive(EntityTracker.selfYFrameIsEye)
+                    say(s, "§b[Cam]§r eye-height fix: §f${mode.name}§r — applied right now: " +
+                        (if (active) "§ayes" else "§7no"))
+                }
+                "fov" -> {
+                    val deg = a.getOrNull(1)?.toFloatOrNull()
+                    if (deg == null || deg < 30f || deg > 130f) {
+                        say(s, "§c[Cmd]§r usage: .camera fov <30-130>"); return@Def
+                    }
+                    GameFov.set(deg)
+                    say(s, "§b[Cam]§r packet-path FOV set to §f${deg}°§r (ignored while the sensor supplies the FOV)")
+                }
+                "audit" -> {
+                    val audit = Backends.audit
+                    if (audit == null) say(s, "§b[Cam]§r no agent attached — nothing to audit against (needs the patched game running).")
+                    else say(s, "§b[Cam]§r " + audit.summary())
+                }
+                else -> {
+                    val cam = RenderCamera.freshSensor()
+                    say(s, "§b[Cam]§r projection source: §f${RenderCamera.activeSource()}§r · packet FOV §f${GameFov.current}°")
+                    if (cam != null) {
+                        say(s, "§7 sensor: fovY=${cam.fovYDeg ?: "–"} mode=${cam.mode ?: "–"} pose=${cam.hasPose} matrix=${cam.vp != null}")
+                    }
+                    say(s, "§7 eye-height fix: ${RenderCamera.frameFixMode} · verified=${RenderCamera.eyeFrameVerified} · " +
+                        "tracker Y frame=${if (EntityTracker.selfYFrameIsEye) "eye" else "feet"} · applied=" +
+                        RenderCamera.eyeFrameFixActive(EntityTracker.selfYFrameIsEye))
+                    say(s, "§7 engine: ${Backends.statusLine()}")
+                }
+            }
         })
     }
 
