@@ -82,7 +82,7 @@ class KillAura : BaseModule(
     // ── Orbit settings (shown only when ORBIT active) ──
     private val orbitRadius    = float("Orbit Radius",  4.5f, 2f, 8f)
         .visibleWhen { rotMode.value == RotationMode.ORBIT }
-    private val orbitSpeed     = float("Orbit Speed",   8.0f, 1f, 20f)
+    private val orbitSpeedMultiplier = float("Orbit Speed", 1.5f, 0.2f, 3f)
         .visibleWhen { rotMode.value == RotationMode.ORBIT }
     private val orbitStiffness = int("Orbit Stiffness", 70, 10, 100)
         .visibleWhen { rotMode.value == RotationMode.ORBIT }
@@ -327,62 +327,69 @@ class KillAura : BaseModule(
                 lockLastTickMs = nowMs
                 lockRadius = orbitRadius.value.coerceAtLeast(MIN_LOCK_RADIUS)
             }
+
             val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
             lockLastTickMs = nowMs
 
-            val ox = EntityTracker.selfX - target.x
-            val oz = EntityTracker.selfZ - target.z
-            val r = sqrt(ox * ox + oz * oz).coerceAtLeast(0.5f)
-            val outX = ox / r; val outZ = oz / r
-            val tanX = -outZ; val tanZ = outX
+            val dx = EntityTracker.selfX - target.x
+            val dz = EntityTracker.selfZ - target.z
+            val dist = hypot(dx.toDouble(), dz.toDouble()).toFloat().coerceAtLeast(0.5f)
 
-            val radiusMin = maxOf(MIN_LOCK_RADIUS, 0.5f)
-            val radiusMax = orbitRadius.value.coerceAtLeast(radiusMin)
-            val fwdIn = pkt.motion.y
-            when {
-                fwdIn >  0.25f -> lockRadius = (lockRadius - orbitSpeed.value * 0.5f * dt).coerceAtLeast(radiusMin)
-                fwdIn < -0.25f -> lockRadius = (lockRadius + orbitSpeed.value * 0.5f * dt).coerceAtMost(radiusMax)
+            val radialX = dx / dist
+            val radialZ = dz / dist
+            val tangentX = -radialZ
+            val tangentZ = radialX
+
+            val forward = pkt.motion.y
+            val strafe = pkt.motion.x
+            val movementIntensity = hypot(forward.toDouble(), strafe.toDouble()).toFloat()
+
+            val targetRadius = orbitRadius.value.coerceAtLeast(MIN_LOCK_RADIUS)
+
+            val fwdBoost = when {
+                forward > 0.15f -> -1f
+                forward < -0.15f -> 1f
+                else -> 0f
             }
+            lockRadius = (lockRadius + fwdBoost * movementIntensity * 0.8f * dt)
+                .coerceIn(MIN_LOCK_RADIUS, targetRadius + 3f)
 
-            val spinDir = when {
-                pkt.inputData.contains(PlayerAuthInputData.LEFT)  ->  1f
+            val radiusError = dist - lockRadius
+            val radialCorrection = radiusError * (orbitStiffness.value / 100f)
+
+            val turnDir = when {
+                pkt.inputData.contains(PlayerAuthInputData.LEFT) -> 1f
                 pkt.inputData.contains(PlayerAuthInputData.RIGHT) -> -1f
-                orbitWhileIdle.value                              ->  lockSpinDir
-                else                                              ->  0f
+                orbitWhileIdle.value -> lockSpinDir
+                else -> 0f
             }
-            if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) lockSpinDir = 1f
-            if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) lockSpinDir = -1f
 
-            val stiffness = orbitStiffness.value / 100f
-            val radialError = r - lockRadius
-            val radialGain = (if (radialError < 0f) 1.4f else 0.7f) * stiffness
-            val vRadial = (-radialError * radialGain).coerceIn(-orbitSpeed.value, orbitSpeed.value)
-            val vTangent = spinDir * orbitSpeed.value
+            if (turnDir != 0f) lockSpinDir = turnDir
 
-            val vx = vRadial * outX + vTangent * tanX
-            val vz = vRadial * outZ + vTangent * tanZ
+            val orbitSpeed = (movementIntensity * 4.5f + 1.2f) * orbitSpeedMultiplier.value
 
-            val stepLen = sqrt(vx * vx + vz * vz) * dt
-            val stepCap = orbitSpeed.value * dt
-            val scale = if (stepLen > stepCap && stepLen > 1e-5f) stepCap / stepLen else 1f
+            val vx = radialCorrection * radialX + turnDir * orbitSpeed * tangentX
+            val vz = radialCorrection * radialZ + turnDir * orbitSpeed * tangentZ
 
-            val nx = EntityTracker.selfX + vx * dt * scale
-            val nz = EntityTracker.selfZ + vz * dt * scale
+            val nx = EntityTracker.selfX + vx * dt
+            val nz = EntityTracker.selfZ + vz * dt
             val ny = pkt.position.y
 
             pkt.position = Vector3f.from(nx, ny, nz)
             EntityTracker.selfX = nx
             EntityTracker.selfY = ny
             EntityTracker.selfZ = nz
+
             PacketUtil.sendMove(
                 session, nx, ny, nz,
                 EntityTracker.selfYaw, EntityTracker.selfPitch,
                 onGround = true, teleport = false, mirrorToClient = true
             )
 
-            val dx = target.x - EntityTracker.selfX
-            val dz = target.z - EntityTracker.selfZ
-            val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+            val targetYaw = Math.toDegrees(
+                atan2(-(target.x - EntityTracker.selfX).toDouble(), (target.z - EntityTracker.selfZ).toDouble())
+            ).toFloat()
+
             rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw))
             shouldRot = true
         }
