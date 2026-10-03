@@ -39,6 +39,8 @@ class CrystalAura : BaseModule(
         private const val CHAT_FAIL_INTERVAL_MS = 10000L
         private const val PENDING_TIMEOUT_MS = 450L
         private const val OBSIDIAN_ACK_TIMEOUT_MS = 1000L
+        private const val OBSIDIAN_RETRY_DELAY_MS = 500L
+        private const val OBSIDIAN_SEARCH_RADIUS = 2
         private const val PENDING_MATCH_RADIUS = 1.5f
         private const val PREDICT_HORIZON  = 32L
         private const val ROTATION_SETTLE_MS = 20L
@@ -99,7 +101,13 @@ class CrystalAura : BaseModule(
     @Volatile private var lockedCrystalId: Long? = null
     @Volatile private var pendingObsidian: PendingObsidian? = null
     @Volatile private var rotationGate: RotationGate? = null
+    /** Key for an obsidian request that is still awaiting an authoritative block update. */
     @Volatile private var autoBaseAttemptKey: String? = null
+    @Volatile private var autoBaseConfirmedKey: String? = null
+    @Volatile private var autoBaseConfirmedBase: Triple<Int, Int, Int>? = null
+    /** Failed/temporarily unavailable target-cell retry throttle; never a permanent lockout. */
+    @Volatile private var autoBaseRetryKey: String? = null
+    @Volatile private var autoBaseRetryAtMs = 0L
 
     private val crystalBlacklist = ConcurrentHashMap<Long, Long>()
 
@@ -138,6 +146,32 @@ class CrystalAura : BaseModule(
 
     private enum class PendingBaseStatus { NONE, WAITING, CONFIRMED, REJECTED }
 
+    private fun autoBaseKey(targetId: Long, targetCell: Triple<Int, Int, Int>): String =
+        "$targetId:${targetCell.first},${targetCell.second},${targetCell.third}"
+
+    private fun resetAutoBaseState() {
+        autoBaseAttemptKey = null
+        autoBaseConfirmedKey = null
+        autoBaseConfirmedBase = null
+        autoBaseRetryKey = null
+        autoBaseRetryAtMs = 0L
+    }
+
+    private fun clearAutoBaseAttempt(targetId: Long, targetCell: Triple<Int, Int, Int>) {
+        val key = autoBaseKey(targetId, targetCell)
+        if (autoBaseAttemptKey == key) autoBaseAttemptKey = null
+        if (autoBaseRetryKey == key) {
+            autoBaseRetryKey = null
+            autoBaseRetryAtMs = 0L
+        }
+    }
+
+    private fun deferAutoBaseRetry(targetId: Long, targetCell: Triple<Int, Int, Int>, now: Long) {
+        autoBaseAttemptKey = null
+        autoBaseRetryKey = autoBaseKey(targetId, targetCell)
+        autoBaseRetryAtMs = now + OBSIDIAN_RETRY_DELAY_MS
+    }
+
     private data class ExplosionResult(val mostDamage: Float, val selfDamage: Float)
 
     // PacketEventBus normally pauses combat listeners while eating. CrystalAura
@@ -157,7 +191,7 @@ class CrystalAura : BaseModule(
         lockedCrystalId = null
         pendingObsidian = null
         rotationGate = null
-        autoBaseAttemptKey = null
+        resetAutoBaseState()
         crystalBlacklist.clear()
         pendingPlaces.clear()
         PacketEventBus.register(this)
@@ -172,7 +206,7 @@ class CrystalAura : BaseModule(
         crystalBlacklist.clear()
         pendingObsidian = null
         rotationGate = null
-        autoBaseAttemptKey = null
+        resetAutoBaseState()
         lockedBase = null
         lockedBaseTargetId = null
         lockedTargetId = null
@@ -284,7 +318,7 @@ class CrystalAura : BaseModule(
             lockedCrystalId = null
             pendingObsidian = null
             rotationGate = null
-            autoBaseAttemptKey = null
+            resetAutoBaseState()
             return
         }
         val target = currentServerTarget(selectedTarget.runtimeId) ?: run {
@@ -297,7 +331,7 @@ class CrystalAura : BaseModule(
             lockedBaseTargetId = null
             pendingObsidian = null
             rotationGate = null
-            autoBaseAttemptKey = null
+            resetAutoBaseState()
         }
         lockedTargetId = target.runtimeId
 
@@ -448,6 +482,7 @@ class CrystalAura : BaseModule(
                 lockedBase = null
                 lockedBaseTargetId = null
             }
+            clearAutoBaseAttempt(pending.targetId, pending.targetCell)
             rotationGate = null
             logFail(session, "obsidian placement abandoned: target moved before server confirmation")
             return PendingBaseStatus.REJECTED
@@ -460,11 +495,15 @@ class CrystalAura : BaseModule(
                 pendingObsidian = null
                 lockedBase = pending.base
                 lockedBaseTargetId = pending.targetId
+                clearAutoBaseAttempt(pending.targetId, pending.targetCell)
+                autoBaseConfirmedKey = autoBaseKey(pending.targetId, pending.targetCell)
+                autoBaseConfirmedBase = pending.base
                 sendLog(session, "Server confirmed obsidian @ ${pending.base}")
                 return PendingBaseStatus.CONFIRMED
             }
             if (id != null && id !in AIR_BLOCKS) {
                 pendingObsidian = null
+                deferAutoBaseRetry(pending.targetId, pending.targetCell, now)
                 logFail(session, "obsidian destination changed before confirmation @ ${pending.base}: $id")
                 return PendingBaseStatus.REJECTED
             }
@@ -472,7 +511,8 @@ class CrystalAura : BaseModule(
 
         if (now - pending.sentAt > OBSIDIAN_ACK_TIMEOUT_MS) {
             pendingObsidian = null
-            logFail(session, "obsidian placement not confirmed by server @ ${pending.base}")
+            deferAutoBaseRetry(pending.targetId, pending.targetCell, now)
+            logFail(session, "obsidian placement not confirmed by server @ ${pending.base}; retrying")
             return PendingBaseStatus.REJECTED
         }
         return PendingBaseStatus.WAITING
@@ -612,14 +652,38 @@ class CrystalAura : BaseModule(
         dbg: ((String) -> Unit)?
     ) {
         val targetCell = blockCell(target)
-        val attemptKey = "${target.runtimeId}:${targetCell.first},${targetCell.second},${targetCell.third}"
-        if (autoBaseAttemptKey == attemptKey) return
+        val attemptKey = autoBaseKey(target.runtimeId, targetCell)
 
-        val spot = findObsidianSpot(target) ?: run {
-            logFail(session, "no server-known, supported foot-adjacent obsidian cell")
+        if (autoBaseConfirmedKey == attemptKey) {
+            val confirmedBase = autoBaseConfirmedBase
+            val current = confirmedBase?.let { knownBlock(it.first, it.second, it.third) }
+            if (current == null || isBaseBlock(current)) {
+                // Keep the confirmed base; don't consume more obsidian just
+                // because the damage gate currently rejects crystal use.
+                dbg?.invoke("auto-obsidian: confirmed base still present/unknown; not placing a duplicate")
+                return
+            }
+            autoBaseConfirmedKey = null
+            autoBaseConfirmedBase = null
+        } else if (autoBaseConfirmedKey != null) {
+            autoBaseConfirmedKey = null
+            autoBaseConfirmedBase = null
+        }
+
+        if (autoBaseAttemptKey == attemptKey) return
+        if (autoBaseRetryKey == attemptKey && now < autoBaseRetryAtMs) return
+        if (autoBaseRetryKey != attemptKey) {
+            autoBaseRetryKey = null
+            autoBaseRetryAtMs = 0L
+        }
+
+        val spot = findObsidianSpot(target, dbg) ?: run {
+            deferAutoBaseRetry(target.runtimeId, targetCell, now)
+            logFail(session, "no server-known, supported obsidian cell near target | ${WorldBlockTracker.debugSummary()}")
             return
         }
         if (PlacementUtil.findItemInInventory(OBSIDIAN_ID) == null) {
+            deferAutoBaseRetry(target.runtimeId, targetCell, now)
             logFail(session, "obsidian is not available in inventory")
             return
         }
@@ -631,6 +695,7 @@ class CrystalAura : BaseModule(
         val finalTarget = currentServerTarget(spot.targetId)
         if (finalTarget == null || blockCell(finalTarget) != spot.targetCell || !isObsidianSpotStillValid(spot, finalTarget)) {
             rotationGate = null
+            deferAutoBaseRetry(target.runtimeId, targetCell, now)
             return
         }
 
@@ -640,6 +705,7 @@ class CrystalAura : BaseModule(
             debugSink = dbg
         ) ?: run {
             rotationGate = null
+            deferAutoBaseRetry(target.runtimeId, targetCell, now)
             logFail(session, "could not prepare obsidian item")
             return
         }
@@ -652,6 +718,7 @@ class CrystalAura : BaseModule(
         if (!stillValid) {
             PlacementUtil.revert(session, prepared)
             rotationGate = null
+            deferAutoBaseRetry(target.runtimeId, targetCell, now)
             return
         }
 
@@ -669,11 +736,14 @@ class CrystalAura : BaseModule(
 
         if (!sent) {
             lastPlaceMs = now
+            deferAutoBaseRetry(target.runtimeId, targetCell, now)
             logFail(session, "obsidian use transaction could not be sent")
             return
         }
 
         autoBaseAttemptKey = attemptKey
+        autoBaseRetryKey = null
+        autoBaseRetryAtMs = 0L
         pendingObsidian = PendingObsidian(
             targetId = spot.targetId,
             targetCell = spot.targetCell,
@@ -684,45 +754,86 @@ class CrystalAura : BaseModule(
         sendLog(session, "obsidian requested @ ${spot.base}; waiting for server block update")
     }
 
-    private fun findObsidianSpot(target: EntityTracker.TrackedEntity): ObsidianSpot? {
-        if (!WorldBlockTracker.hasAnyTerrainData()) return null
-        val cell = blockCell(target)
-        val yLevels = if (footPriority.value) listOf(cell.second, cell.second - 1) else listOf(cell.second - 1, cell.second)
-
-        for (baseY in yLevels) {
-            val candidates = ArrayList<Pair<ObsidianSpot, Float>>()
-            for ((dx, dz) in ADJACENT_OFFSETS) {
-                val x = cell.first + dx
-                val z = cell.third + dz
-                val current = knownBlock(x, baseY, z) ?: continue
-                if (current !in AIR_BLOCKS) continue
-                if (!isKnownAir(x, baseY + 1, z) || !isKnownAir(x, baseY + 2, z)) continue
-                if (playerOverlapsCell(x, baseY, z)) continue
-
-                val neighbor = PlacementUtil.findClickableNeighbor(x, baseY, z) ?: continue
-                val supportId = knownBlock(neighbor.first.x, neighbor.first.y, neighbor.first.z) ?: continue
-                if (supportId in NON_SOLID || supportId != neighbor.second) continue
-
-                val clickPosition = clickPositionForFace(neighbor.third)
-                val clickWorld = clickWorldPosition(neighbor.first, clickPosition)
-                if (distanceFromEye(clickWorld.first, clickWorld.second, clickWorld.third) > range.value) continue
-                if (MathUtil.dist3(x + 0.5f, baseY + 1f, z + 0.5f, target.x, target.y + 0.9f, target.z) > range.value + 1f) continue
-
-                val spot = ObsidianSpot(
-                    targetId = target.runtimeId,
-                    targetCell = cell,
-                    base = Triple(x, baseY, z),
-                    supportPos = neighbor.first,
-                    supportId = supportId,
-                    face = neighbor.third,
-                    clickPosition = clickPosition
-                )
-                candidates.add(spot to distanceFromEye(clickWorld.first, clickWorld.second, clickWorld.third))
-            }
-            // Preserve tier priority (feet, then floor); within a tier prefer
-            // the supported face closest to the player's server position.
-            candidates.minByOrNull { it.second }?.let { return it.first }
+    private fun findObsidianSpot(
+        target: EntityTracker.TrackedEntity,
+        dbg: ((String) -> Unit)?
+    ): ObsidianSpot? {
+        if (!WorldBlockTracker.hasAnyTerrainData()) {
+            dbg?.invoke("obsidian search skipped: no decoded sections or block updates")
+            return null
         }
+
+        val cell = blockCell(target)
+        val selfFeetY = floor(playerFeetY()).toInt()
+        val yOrder = (if (footPriority.value) {
+            listOf(cell.second, cell.second - 1, selfFeetY, selfFeetY - 1)
+        } else {
+            listOf(cell.second - 1, cell.second, selfFeetY - 1, selfFeetY)
+        }).distinct()
+
+        var inspected = 0
+        var clearCells = 0
+        var supportedCells = 0
+        var reachableCells = 0
+
+        // First try the immediate ring, then one more block out. This covers
+        // offset/jumping targets and crowded feet without inventing support
+        // blocks or treating unknown world data as air.
+        for (baseY in yOrder) {
+            for (radius in 1..OBSIDIAN_SEARCH_RADIUS) {
+                val candidates = ArrayList<Pair<ObsidianSpot, Float>>()
+                for (dx in -radius..radius) {
+                    for (dz in -radius..radius) {
+                        if (maxOf(abs(dx), abs(dz)) != radius) continue
+                        inspected++
+                        val x = cell.first + dx
+                        val z = cell.third + dz
+                        val current = knownBlock(x, baseY, z) ?: continue
+                        if (current !in AIR_BLOCKS) continue
+                        if (!isKnownAir(x, baseY + 1, z) || !isKnownAir(x, baseY + 2, z)) continue
+                        clearCells++
+                        if (playerOverlapsCell(x, baseY, z)) continue
+
+                        val neighbor = PlacementUtil.findClickableNeighbor(x, baseY, z) ?: continue
+                        val supportId = knownBlock(neighbor.first.x, neighbor.first.y, neighbor.first.z) ?: continue
+                        if (supportId in NON_SOLID || supportId != neighbor.second) continue
+                        supportedCells++
+
+                        val clickPosition = clickPositionForFace(neighbor.third)
+                        val clickWorld = clickWorldPosition(neighbor.first, clickPosition)
+                        if (distanceFromEye(clickWorld.first, clickWorld.second, clickWorld.third) > range.value) continue
+                        if (MathUtil.dist3(
+                                x + 0.5f, baseY + 1f, z + 0.5f,
+                                target.x, target.y + 0.9f, target.z
+                            ) > range.value + 1f
+                        ) continue
+                        reachableCells++
+
+                        val spot = ObsidianSpot(
+                            targetId = target.runtimeId,
+                            targetCell = cell,
+                            base = Triple(x, baseY, z),
+                            supportPos = neighbor.first,
+                            supportId = supportId,
+                            face = neighbor.third,
+                            clickPosition = clickPosition
+                        )
+                        candidates.add(spot to distanceFromEye(clickWorld.first, clickWorld.second, clickWorld.third))
+                    }
+                }
+                // Keep target-foot/floor priority, then prefer the closest
+                // valid support click within that height and horizontal ring.
+                candidates.minByOrNull { it.second }?.let {
+                    dbg?.invoke("obsidian spot=${it.first.base} support=${it.first.supportPos}/${it.first.face}")
+                    return it.first
+                }
+            }
+        }
+
+        dbg?.invoke(
+            "obsidian search miss: targetCell=$cell yLevels=$yOrder inspected=$inspected " +
+                "clear=$clearCells supported=$supportedCells inReach=$reachableCells"
+        )
         return null
     }
 

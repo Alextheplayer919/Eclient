@@ -95,8 +95,8 @@ object WorldBlockTracker : PacketEventBus.PacketListener {
     }
 
     fun debugSummary(): String =
-        "chunks=${statChunksReceived.get()} skip_noSubCount=${statSkippedNoSubCount.get()} " +
-        "skip_streamed=${statSkippedStreamed.get()} " +
+        "chunks=${statChunksReceived.get()} sections=${sections.size} overrides=${overrides.size} " +
+        "skip_noSubCount=${statSkippedNoSubCount.get()} skip_streamed=${statSkippedStreamed.get()} " +
         "skip_caching=${statSkippedCaching.get()} skip_noBuf=${statSkippedNoBuf.get()} " +
         "decodeFailed=${statDecodeFailed.get()} sectionsStored=${statSectionsStored.get()} " +
         "lastEx=${lastException ?: "-"} lastVersionByte=$lastVersionByte"
@@ -122,6 +122,7 @@ object WorldBlockTracker : PacketEventBus.PacketListener {
 
     fun reset() {
         sections.clear(); insertOrder.clear(); overrides.clear(); persistentPalettes.clear()
+        identifierCache.clear()
         statChunksReceived.set(0); statSkippedNoSubCount.set(0); statSkippedStreamed.set(0)
         statSkippedCaching.set(0)
         statSkippedNoBuf.set(0); statDecodeFailed.set(0); statSectionsStored.set(0)
@@ -174,7 +175,12 @@ object WorldBlockTracker : PacketEventBus.PacketListener {
         }
     }
 
-    fun hasAnyTerrainData(): Boolean = sections.isNotEmpty()
+    /**
+     * True once any server-backed block state is known. Single-block updates can
+     * arrive before a full chunk/subchunk has been decoded, so overrides count
+     * as terrain data too (but unknown cells remain unknown to getBlockIdentifier).
+     */
+    fun hasAnyTerrainData(): Boolean = sections.isNotEmpty() || overrides.isNotEmpty()
 
     fun getBlockIdentifier(x: Int, y: Int, z: Int): String? {
 

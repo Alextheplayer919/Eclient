@@ -123,8 +123,9 @@ Forces every hit to crit by injecting the micro-position packets vanilla jump-cr
 ### CrystalAura — `module/combat/CrystalAura.kt`
 Places and breaks end crystals using explosion-damage scoring, with server-confirmed base placement and crystal-spawn checks.
 - **Settings**: Range, Auto Obsidian, Foot Priority, Silent Rotation, Min Place Damage, Max Self Damage, Min Break Damage.
-- **Placement flow**: Prefer a usable obsidian/bedrock block at the target's feet, otherwise place obsidian on a server-known supported cell and wait for the server block update before simulating damage or placing a crystal.
-- **Rotation/validation**: Silent aim modifies outbound movement rotation only for both placement and crystal attacks; target runtime id/position, crystal id/damage, base block, and two-block clearance are rechecked against server-tracked state immediately before use.
+- **Placement flow**: Prefer a usable obsidian/bedrock block at the target's feet, otherwise place obsidian on a server-known supported cell and wait for the server block update before simulating damage or placing a crystal. Auto-base placement retries after an unconfirmed/rejected request instead of permanently latching the target cell; the planner checks target/self feet levels and a two-block horizontal search ring.
+- **Rotation/validation**: Silent aim modifies outbound movement rotation only for both placement and crystal attacks; target runtime id/position, crystal id/damage, base block, and two-block clearance are rechecked against server-tracked state immediately before use. Crystal damage gates can still intentionally suppress crystal use even when a base is available.
+- **Protocol notes**: See [`CRYSTAL_AURA.md`](CRYSTAL_AURA.md) for the Bedrock `ITEM_USE`/`CLICK_BLOCK` wire fields, acknowledgement flow, and research sources.
 - **Reads**: `AddEntityPacket` (crystal spawn confirmation), `LevelEventPacket`, outbound movement packets (silent rotation), and `WorldBlockTracker` server block updates.
 - **Key functions**: `pickTarget`, `advancePendingObsidian`, `tryExplodeBest`, `tryPlace`, `findAdjacentFootBase`, `findObsidianSpot`, `fireIdPredictions`, `buildBestBase`/`searchPlaceBase`, `simulateExplosionDamage`/`exposureTo`/`isRayBlocked`, `attackCrystal`, `pruneBlacklist`, `checkTimedOutPlacements`.
 

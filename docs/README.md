@@ -24,6 +24,7 @@ or protocol usage change.
 | AUTOSIGN.md | AutoSign: sign wire flow (OpenSign + BlockEntityDataPacket) and the empty-lines-only rewrite |
 | AUTOTORCH.md | AutoTorch: researched Bedrock spawn rules, no-light-on-the-wire finding, client-side light flood |
 | MELODY_MODULES.md | KillAura and the Melody combat module family |
+| CRYSTAL_AURA.md | CrystalAura's Bedrock placement packet contract, server-ack flow, retry fix, and research sources |
 | ANTI_CAMPER_PLAYBOOK.md | ACA / anti-camper playbooks |
 
 ## Update rules (so docs never drift)
