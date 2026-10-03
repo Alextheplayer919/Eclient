@@ -69,7 +69,7 @@ object ChatCommands : PacketEventBus.PacketListener {
         DiagLog.log(TAG, "registered ${commands.size} chat commands")
     }
 
-    // ── interception ─────────────────────────────────────────────────────────
+    // ── interception ────────────────────────────────────────────────────────
 
     override fun onPacket(event: PacketEvent) {
         if (!event.isClientToServer) return
@@ -131,7 +131,7 @@ object ChatCommands : PacketEventBus.PacketListener {
         }
     }
 
-    // ── registry ─────────────────────────────────────────────────────────────
+    // ── registry ─────────────────────────────────────────────────────────
 
     private fun reg(def: Def) { commands[def.name.lowercase()] = def }
 
@@ -245,21 +245,19 @@ object ChatCommands : PacketEventBus.PacketListener {
         // ── friends / enemies ──────────────────────────────────────────
 
         reg(Def("friend add", ".friend add <name>", "social",
-            "Adds a player to the GLOBAL friend list. /w's them if online (configurable).",
+            "Adds a player to the GLOBAL friend list and sends them a notification.",
             ".friend add Steve") { s, a ->
             val name = a.firstOrNull() ?: run { say(s, "§c[Cmd]§r usage: .friend add <name>"); return@Def }
-            if (FriendLibrary.addFriend(name)) {
+            if (FriendCommandHelper.addFriend(s, name)) {
                 say(s, "§b[Friends]§r §a+§f $name added")
-                FriendLibrary.whisper(s, name, FriendLibrary.msgAdd)
             } else say(s, "§7[Friends]§r $name was already a friend")
         })
 
         reg(Def("friend remove", ".friend remove <name>", "social",
-            "Removes a player from the friend list.", ".friend remove Steve") { s, a ->
+            "Removes a player from the friend list and sends them a notification.", ".friend remove Steve") { s, a ->
             val name = a.firstOrNull() ?: run { say(s, "§c[Cmd]§r usage: .friend remove <name>"); return@Def }
-            if (FriendLibrary.removeFriend(name)) {
+            if (FriendCommandHelper.removeFriend(s, name)) {
                 say(s, "§b[Friends]§r §c-§f $name removed")
-                FriendLibrary.whisper(s, name, FriendLibrary.msgRemove)
             } else say(s, "§7[Friends]§r $name wasn't on the list")
         })
 
@@ -279,7 +277,7 @@ object ChatCommands : PacketEventBus.PacketListener {
         })
 
         reg(Def("friend msg", ".friend msg <add|remove> <text...>", "social",
-            "Sets the /w text sent on friend add / remove.", ".friend msg add hi there") { s, a ->
+            "Sets the /w text sent on friend add / remove.", ".friend msg add hey we're friends now") { s, a ->
             if (a.size < 2) { say(s, "§c[Cmd]§r usage: .friend msg <add|remove> <text>"); return@Def }
             val text = a.drop(1).joinToString(" ")
             when (a[0].lowercase()) {
@@ -292,17 +290,17 @@ object ChatCommands : PacketEventBus.PacketListener {
         })
 
         reg(Def("enemy add", ".enemy add <name>", "social",
-            "Adds a player to the GLOBAL enemy list (KillAura priority input in a later phase).",
+            "Adds a player to the GLOBAL enemy list (priority input for KillAura).",
             ".enemy add Steve") { s, a ->
             val name = a.firstOrNull() ?: run { say(s, "§c[Cmd]§r usage: .enemy add <name>"); return@Def }
-            if (FriendLibrary.addEnemy(name)) say(s, "§b[Enemies]§r §c+§f $name added")
+            if (FriendCommandHelper.addEnemy(s, name)) say(s, "§b[Enemies]§r §c+§f $name added")
             else say(s, "§7[Enemies]§r $name was already an enemy")
         })
 
         reg(Def("enemy remove", ".enemy remove <name>", "social",
             "Removes a player from the enemy list.", ".enemy remove Steve") { s, a ->
             val name = a.firstOrNull() ?: run { say(s, "§c[Cmd]§r usage: .enemy remove <name>"); return@Def }
-            if (FriendLibrary.removeEnemy(name)) say(s, "§b[Enemies]§r §a-§f $name removed")
+            if (FriendCommandHelper.removeEnemy(s, name)) say(s, "§b[Enemies]§r §a-§f $name removed")
             else say(s, "§7[Enemies]§r $name wasn't on the list")
         })
 
