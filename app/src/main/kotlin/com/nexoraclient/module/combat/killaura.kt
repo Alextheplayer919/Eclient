@@ -109,7 +109,7 @@ class KillAura : BaseModule(
         .visibleWhen { quantum.value }
     private val quantumStrength= float("Q-Strength",      1.5f, 0f,  5f)
         .visibleWhen { quantum.value }
-    private val quantumHistory = int ("Q-History",        10,   3,   30)
+    private val quantumHistory = int("Q-History",        10,   3,   30)
         .visibleWhen { quantum.value }
 
     // ── Base ───────────────────────────────────────────────
@@ -131,21 +131,7 @@ class KillAura : BaseModule(
     @Volatile private var cachedTargets: List<EntityTracker.TrackedEntity> = emptyList()
     @Volatile private var lastScanMs     = 0L
 
-    private var rotAngle = Pair(0f, 0f)
-    private var shouldRot = false
-    private var softYaw = 0f
-    private var softPitch = 0f
-    private var lastSoftTarget: EntityTracker.TrackedEntity? = null
-
-    // ── Orbit / Lock shared state ──
-    private var lastLockTarget: EntityTracker.TrackedEntity? = null
-    private var lockLastTickMs = 0L
-    private var lockRadius     = 0f
-    private var lockSpinDir    = 1f     // +1 CCW, -1 CW — persisted across ticks
-
-    private var randomYawOffset = 0f
-    private var randomPitchOffset = 0f
-    private var lastRandomTarget: EntityTracker.TrackedEntity? = null
+    private val rotationController = RotationController()
 
     private var positionHistory = mutableListOf<Vector3f>()
     private var velocityHistory = mutableListOf<Vector3f>()
@@ -153,6 +139,265 @@ class KillAura : BaseModule(
     private var quantumConfidence = 1.0f
 
     private var tickJob: Job? = null
+
+    private inner class RotationController {
+        private var rotAngle = Pair(0f, 0f)
+        private var shouldRot = false
+        private var softYaw = 0f
+        private var softPitch = 0f
+        private var lastSoftTarget: EntityTracker.TrackedEntity? = null
+
+        // ── Orbit / Lock shared state ──
+        private var lastLockTarget: EntityTracker.TrackedEntity? = null
+        private var lockLastTickMs = 0L
+        private var lockRadius = 0f
+        private var lockSpinDir = 1f
+
+        private var randomYawOffset = 0f
+        private var randomPitchOffset = 0f
+        private var lastRandomTarget: EntityTracker.TrackedEntity? = null
+
+        fun reset() {
+            rotAngle = Pair(0f, 0f)
+            shouldRot = false
+            softYaw = 0f
+            softPitch = 0f
+            lastSoftTarget = null
+            lastLockTarget = null
+            lockLastTickMs = 0L
+            lockRadius = 0f
+            lockSpinDir = 1f
+            randomYawOffset = 0f
+            randomPitchOffset = 0f
+            lastRandomTarget = null
+        }
+
+        fun consume(): Pair<Float, Float>? = if (shouldRot && rotMode.value != RotationMode.NONE) rotAngle else null
+
+        fun update(mode: RotationMode, target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket, session: RubidiumRelaySession) {
+            when (mode) {
+                RotationMode.RANDOM      -> applyRandomRotation(target)
+                RotationMode.TARGET_LOCK -> applyTargetLock(target, pkt, session)
+                RotationMode.ORBIT       -> applyOrbit(target, pkt, session)
+                RotationMode.SOFT_LOCK   -> applySoftLock(target, pkt)
+                RotationMode.NONE,
+                RotationMode.AIM         -> calculateRotationKillAura3(target, pkt)
+            }
+        }
+
+        private fun calculateRotationKillAura3(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
+            var aimPos = Vector3f.from(target.x, target.y, target.z)
+            aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
+            if (quantum.value) {
+                val currentPos = aimPos
+                aimPos = predictWithQuantum(target, currentPos)
+                if (quantumConfidence < 0.5f) {
+                    aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
+                }
+            }
+            val rot = RotationUtil.toPoint(aimPos.x, aimPos.y, aimPos.z)
+            rotAngle = Pair(rot.pitch, rot.yaw)
+            shouldRot = true
+        }
+
+        private fun applyRandomRotation(target: EntityTracker.TrackedEntity) {
+            val dx = target.x - EntityTracker.selfX
+            val dz = target.z - EntityTracker.selfZ
+            val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+            if (lastRandomTarget != target) {
+                randomYawOffset = 0f
+                randomPitchOffset = 0f
+                lastRandomTarget = target
+            }
+            val bigJolt = Random.nextFloat() < 0.08f
+            val yawStep = Random.nextFloat() * (if (bigJolt) 16f else 4f)
+            randomYawOffset = (randomYawOffset + if (Random.nextBoolean()) yawStep else -yawStep)
+            val pitchStep = Random.nextFloat() * (if (bigJolt) 8f else 2f)
+            randomPitchOffset = (randomPitchOffset + if (Random.nextBoolean()) pitchStep else -pitchStep)
+            randomYawOffset   = randomYawOffset.coerceIn(-40f, 40f)
+            randomPitchOffset = randomPitchOffset.coerceIn(-15f, 15f)
+            if (Random.nextFloat() < 0.05f) {
+                randomYawOffset   *= 0.5f
+                randomPitchOffset *= 0.5f
+            }
+            val pitch = (EntityTracker.selfPitch + randomPitchOffset).coerceIn(-90f, 90f)
+            rotAngle = Pair(pitch, wrapYaw(targetYaw + randomYawOffset))
+            shouldRot = true
+        }
+
+        private fun applySoftLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
+            val px = pkt.position.x
+            val pz = pkt.position.z
+            val prevX = EntityTracker.selfX
+            val prevZ = EntityTracker.selfZ
+            val dx = px - prevX
+            val dz = pz - prevZ
+            val speed = sqrt(dx * dx.toDouble() + dz * dz.toDouble()).toFloat()
+            val inFwd = pkt.motion.y
+            val inStr = pkt.motion.x
+            val hasMovementInput = abs(inFwd) > 0.05f || abs(inStr) > 0.05f
+            if (hasMovementInput && speed > 0.005f) {
+                val ox = px - target.x
+                val oz = pz - target.z
+                val r = sqrt(ox * ox.toDouble() + oz * oz.toDouble()).toFloat().coerceAtLeast(0.5f)
+                val outX = ox / r; val outZ = oz / r
+                val tanX = -outZ;  val tanZ = outX
+                val vr = -inFwd
+                val vt = inStr
+                val nx = (vr * outX + vt * tanX) * speed
+                val nz = (vr * outZ + vt * tanZ) * speed
+                val s = softLockStrength.value / 100f
+                val fx = dx * (1f - s) + nx * s
+                val fz = dz * (1f - s) + nz * s
+                pkt.position = Vector3f.from(prevX + fx, pkt.position.y, prevZ + fz)
+            }
+            val rot = RotationUtil.toPoint(target.x, target.y + 1.5f, target.z)
+            val targetYaw = rot.yaw
+            val targetPitch = rot.pitch
+            if (lastSoftTarget != target) {
+                lastSoftTarget = target
+                softYaw = EntityTracker.selfYaw
+                softPitch = EntityTracker.selfPitch
+            }
+            val maxStep = softLockRotSpeed.value
+            val dy = wrapYaw(targetYaw - softYaw).coerceIn(-maxStep, maxStep)
+            val dp = (targetPitch - softPitch).coerceIn(-maxStep * 0.5f, maxStep * 0.5f)
+            softYaw = wrapYaw(softYaw + dy)
+            softPitch = (softPitch + dp).coerceIn(-90f, 90f)
+            rotAngle = Pair(softPitch, softYaw)
+            shouldRot = true
+        }
+
+        private fun applyTargetLock(
+            target: EntityTracker.TrackedEntity,
+            pkt: PlayerAuthInputPacket,
+            session: RubidiumRelaySession
+        ) {
+            val nowMs = System.currentTimeMillis()
+            if (lastLockTarget != target || lockLastTickMs <= 0L) {
+                lastLockTarget = target
+                lockLastTickMs = nowMs
+                lockRadius = 0f
+            }
+            if (lockRadius <= 0f) lockRadius = lockDistance.value.coerceAtLeast(MIN_LOCK_RADIUS)
+
+            val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
+            val radiusMin = minOf(MIN_LOCK_RADIUS, lockDistance.value)
+            val fwdIn = pkt.motion.y
+            when {
+                fwdIn > 0.25f  -> lockRadius = (lockRadius - lockSpeed.value * 0.5f * dt).coerceAtLeast(radiusMin)
+                fwdIn < -0.25f -> lockRadius = (lockRadius + lockSpeed.value * 0.5f * dt).coerceAtMost(lockDistance.value.coerceAtLeast(radiusMin))
+            }
+
+            var spinDir = 0f
+            if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) spinDir = 1f
+            else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = -1f
+
+            if (spinDir != 0f) {
+                val step = (lockSpeed.value / lockRadius) * dt
+                val angle = atan2(EntityTracker.selfZ - target.z, EntityTracker.selfX - target.x)
+                val nextAngle = angle + spinDir * step
+                val nx = target.x + lockRadius * cos(nextAngle)
+                val nz = target.z + lockRadius * sin(nextAngle)
+                val ny = pkt.position.y
+                pkt.position = Vector3f.from(nx, ny, nz)
+                EntityTracker.selfX = nx
+                EntityTracker.selfY = ny
+                EntityTracker.selfZ = nz
+                PacketUtil.sendMove(
+                    session, nx, ny, nz,
+                    EntityTracker.selfYaw, EntityTracker.selfPitch,
+                    onGround = true, teleport = true, mirrorToClient = true
+                )
+            }
+
+            lockLastTickMs = nowMs
+
+            val dx = target.x - EntityTracker.selfX
+            val dz = target.z - EntityTracker.selfZ
+            val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+            rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw))
+            shouldRot = true
+        }
+
+        private fun applyOrbit(
+            target: EntityTracker.TrackedEntity,
+            pkt: PlayerAuthInputPacket,
+            session: RubidiumRelaySession
+        ) {
+            val nowMs = System.currentTimeMillis()
+            if (lastLockTarget != target || lockLastTickMs <= 0L) {
+                lastLockTarget = target
+                lockLastTickMs = nowMs
+                lockRadius = orbitRadius.value.coerceAtLeast(MIN_LOCK_RADIUS)
+            }
+            val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
+            lockLastTickMs = nowMs
+
+            val ox = EntityTracker.selfX - target.x
+            val oz = EntityTracker.selfZ - target.z
+            val r = sqrt(ox * ox + oz * oz).coerceAtLeast(0.5f)
+            val outX = ox / r; val outZ = oz / r
+            val tanX = -outZ; val tanZ = outX
+
+            val radiusMin = maxOf(MIN_LOCK_RADIUS, 0.5f)
+            val radiusMax = orbitRadius.value.coerceAtLeast(radiusMin)
+            val fwdIn = pkt.motion.y
+            when {
+                fwdIn >  0.25f -> lockRadius = (lockRadius - orbitSpeed.value * 0.5f * dt).coerceAtLeast(radiusMin)
+                fwdIn < -0.25f -> lockRadius = (lockRadius + orbitSpeed.value * 0.5f * dt).coerceAtMost(radiusMax)
+            }
+
+            val spinDir = when {
+                pkt.inputData.contains(PlayerAuthInputData.LEFT)  ->  1f
+                pkt.inputData.contains(PlayerAuthInputData.RIGHT) -> -1f
+                orbitWhileIdle.value                              ->  lockSpinDir
+                else                                              ->  0f
+            }
+            if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) lockSpinDir = 1f
+            if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) lockSpinDir = -1f
+
+            val stiffness = orbitStiffness.value / 100f
+            val radialError = r - lockRadius
+            val radialGain = (if (radialError < 0f) 1.4f else 0.7f) * stiffness
+            val vRadial = (-radialError * radialGain).coerceIn(-orbitSpeed.value, orbitSpeed.value)
+            val vTangent = spinDir * orbitSpeed.value
+
+            val vx = vRadial * outX + vTangent * tanX
+            val vz = vRadial * outZ + vTangent * tanZ
+
+            val stepLen = sqrt(vx * vx + vz * vz) * dt
+            val stepCap = orbitSpeed.value * dt
+            val scale = if (stepLen > stepCap && stepLen > 1e-5f) stepCap / stepLen else 1f
+
+            val nx = EntityTracker.selfX + vx * dt * scale
+            val nz = EntityTracker.selfZ + vz * dt * scale
+            val ny = pkt.position.y
+
+            pkt.position = Vector3f.from(nx, ny, nz)
+            EntityTracker.selfX = nx
+            EntityTracker.selfY = ny
+            EntityTracker.selfZ = nz
+            PacketUtil.sendMove(
+                session, nx, ny, nz,
+                EntityTracker.selfYaw, EntityTracker.selfPitch,
+                onGround = true, teleport = false, mirrorToClient = true
+            )
+
+            val dx = target.x - EntityTracker.selfX
+            val dz = target.z - EntityTracker.selfZ
+            val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+            rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw))
+            shouldRot = true
+        }
+
+        private fun wrapYaw(yaw: Float): Float {
+            var y = yaw % 360f
+            if (y > 180f) y -= 360f
+            if (y < -180f) y += 360f
+            return y
+        }
+    }
 
     override fun onEnable() {
         super.onEnable()
@@ -166,14 +411,7 @@ class KillAura : BaseModule(
         velocityHistory.clear()
         lastQuantumTarget = null
         quantumConfidence = 1.0f
-        lastLockTarget = null
-        lockLastTickMs = 0L
-        lockRadius = 0f
-        lockSpinDir = 1f
-        randomYawOffset = 0f
-        randomPitchOffset = 0f
-        lastRandomTarget = null
-        lastSoftTarget = null
+        rotationController.reset()
         PacketEventBus.register(this)
         tickJob = scope.launch { tickLoop() }
     }
@@ -184,11 +422,7 @@ class KillAura : BaseModule(
         positionHistory.clear()
         velocityHistory.clear()
         lastQuantumTarget = null
-        lastLockTarget = null
-        lockLastTickMs = 0L
-        lockRadius = 0f
-        lockSpinDir = 1f
-        lastSoftTarget = null
+        rotationController.reset()
         super.onDisable()
     }
 
@@ -366,245 +600,6 @@ class KillAura : BaseModule(
             total.z * quantumStrength.value))
     }
 
-    // ── AIM (unchanged) ─────────────────────────────────────
-    private fun calculateRotationKillAura3(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        var aimPos = Vector3f.from(target.x, target.y, target.z)
-        aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
-        if (quantum.value) {
-            val currentPos = aimPos
-            aimPos = predictWithQuantum(target, currentPos)
-            if (quantumConfidence < 0.5f) {
-                aimPos = Vector3f.from(aimPos.x, target.y + 0.5f, aimPos.z)
-            }
-        }
-        val rot = RotationUtil.toPoint(aimPos.x, aimPos.y, aimPos.z)
-        rotAngle = Pair(rot.pitch, rot.yaw)
-        shouldRot = true
-    }
-
-    // ── RANDOM (unchanged) ──────────────────────────────────
-    private fun applyRandomRotation(target: EntityTracker.TrackedEntity) {
-        val dx = target.x - EntityTracker.selfX
-        val dz = target.z - EntityTracker.selfZ
-        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
-        if (lastRandomTarget != target) {
-            randomYawOffset = 0f
-            randomPitchOffset = 0f
-            lastRandomTarget = target
-        }
-        val bigJolt = Random.nextFloat() < 0.08f
-        val yawStep = Random.nextFloat() * (if (bigJolt) 16f else 4f)
-        randomYawOffset = (randomYawOffset + if (Random.nextBoolean()) yawStep else -yawStep)
-        val pitchStep = Random.nextFloat() * (if (bigJolt) 8f else 2f)
-        randomPitchOffset = (randomPitchOffset + if (Random.nextBoolean()) pitchStep else -pitchStep)
-        randomYawOffset   = randomYawOffset.coerceIn(-40f, 40f)
-        randomPitchOffset = randomPitchOffset.coerceIn(-15f, 15f)
-        if (Random.nextFloat() < 0.05f) {
-            randomYawOffset   *= 0.5f
-            randomPitchOffset *= 0.5f
-        }
-        val pitch = (EntityTracker.selfPitch + randomPitchOffset).coerceIn(-90f, 90f)
-        rotAngle = Pair(pitch, wrapYaw(targetYaw + randomYawOffset))
-        shouldRot = true
-    }
-
-    // ── SOFT LOCK (unchanged) ───────────────────────────────
-    private fun applySoftLock(target: EntityTracker.TrackedEntity, pkt: PlayerAuthInputPacket) {
-        val px = pkt.position.x
-        val pz = pkt.position.z
-        val prevX = EntityTracker.selfX
-        val prevZ = EntityTracker.selfZ
-        val dx = px - prevX
-        val dz = pz - prevZ
-        val speed = sqrt(dx * dx.toDouble() + dz * dz.toDouble()).toFloat()
-        val inFwd = pkt.motion.y
-        val inStr = pkt.motion.x
-        val hasMovementInput = abs(inFwd) > 0.05f || abs(inStr) > 0.05f
-        if (hasMovementInput && speed > 0.005f) {
-            val ox = px - target.x
-            val oz = pz - target.z
-            val r = sqrt(ox * ox.toDouble() + oz * oz.toDouble()).toFloat().coerceAtLeast(0.5f)
-            val outX = ox / r; val outZ = oz / r
-            val tanX = -outZ;  val tanZ = outX
-            val vr = -inFwd
-            val vt = inStr
-            val nx = (vr * outX + vt * tanX) * speed
-            val nz = (vr * outZ + vt * tanZ) * speed
-            val s = softLockStrength.value / 100f
-            val fx = dx * (1f - s) + nx * s
-            val fz = dz * (1f - s) + nz * s
-            pkt.position = Vector3f.from(prevX + fx, pkt.position.y, prevZ + fz)
-        }
-        val rot = RotationUtil.toPoint(target.x, target.y + 1.5f, target.z)
-        val targetYaw = rot.yaw
-        val targetPitch = rot.pitch
-        if (lastSoftTarget != target) {
-            lastSoftTarget = target
-            softYaw = EntityTracker.selfYaw
-            softPitch = EntityTracker.selfPitch
-        }
-        val maxStep = softLockRotSpeed.value
-        val dy = wrapYaw(targetYaw - softYaw).coerceIn(-maxStep, maxStep)
-        val dp = (targetPitch - softPitch).coerceIn(-maxStep * 0.5f, maxStep * 0.5f)
-        softYaw = wrapYaw(softYaw + dy)
-        softPitch = (softPitch + dp).coerceIn(-90f, 90f)
-        rotAngle = Pair(softPitch, softYaw)
-        shouldRot = true
-    }
-
-    // ─────────────────────────────────────────────────────────
-    // LEGACY TARGET LOCK — teleport orbit
-    // Compiled in only when BuildConfig.ENABLE_ORBIT_MODE == false.
-    // Kept intact so a one-flag rollback restores known behavior.
-    // ─────────────────────────────────────────────────────────
-    private fun applyTargetLock(
-        target: EntityTracker.TrackedEntity,
-        pkt: PlayerAuthInputPacket,
-        session: RubidiumRelaySession
-    ) {
-        val nowMs = System.currentTimeMillis()
-        if (lastLockTarget != target || lockLastTickMs <= 0L) {
-            lastLockTarget = target
-            lockLastTickMs = nowMs
-            lockRadius = 0f
-        }
-        if (lockRadius <= 0f) lockRadius = lockDistance.value.coerceAtLeast(MIN_LOCK_RADIUS)
-
-        val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
-        val radiusMin = minOf(MIN_LOCK_RADIUS, lockDistance.value)
-        val fwdIn = pkt.motion.y
-        when {
-            fwdIn > 0.25f  -> lockRadius = (lockRadius - lockSpeed.value * 0.5f * dt).coerceAtLeast(radiusMin)
-            fwdIn < -0.25f -> lockRadius = (lockRadius + lockSpeed.value * 0.5f * dt).coerceAtMost(lockDistance.value.coerceAtLeast(radiusMin))
-        }
-
-        var spinDir = 0f
-        if (pkt.inputData.contains(PlayerAuthInputData.LEFT)) spinDir = 1f
-        else if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) spinDir = -1f
-
-        if (spinDir != 0f) {
-            val step = (lockSpeed.value / lockRadius) * dt
-            val angle = atan2(EntityTracker.selfZ - target.z, EntityTracker.selfX - target.x)
-            val nextAngle = angle + spinDir * step
-            val nx = target.x + lockRadius * cos(nextAngle)
-            val nz = target.z + lockRadius * sin(nextAngle)
-            val ny = pkt.position.y
-            pkt.position = Vector3f.from(nx, ny, nz)
-            EntityTracker.selfX = nx
-            EntityTracker.selfY = ny
-            EntityTracker.selfZ = nz
-            PacketUtil.sendMove(
-                session, nx, ny, nz,
-                EntityTracker.selfYaw, EntityTracker.selfPitch,
-                onGround = true, teleport = true, mirrorToClient = true
-            )
-        }
-
-        lockLastTickMs = nowMs
-
-        val dx = target.x - EntityTracker.selfX
-        val dz = target.z - EntityTracker.selfZ
-        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
-        rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw))
-        shouldRot = true
-    }
-
-    // ─────────────────────────────────────────────────────────
-    // ORBIT — non-teleport orbit
-    // Compiled in only when BuildConfig.ENABLE_ORBIT_MODE == true.
-    //
-    //   • Automatic orbit at orbitRadius when LEFT/RIGHT held.
-    //   • LEFT = counter-clockwise, RIGHT = clockwise.
-    //   • No input → holds radius, still faces target, still attacks.
-    //   • FORWARD/BACK retunes orbitRadius itself (persistent).
-    //   • Radial correction keeps standoff; stiffer when too close
-    //     so a walking target can't drag you into face-hug.
-    //   • Position applied as a walking-scale delta, never a set.
-    // ─────────────────────────────────────────────────────────
-    private fun applyOrbit(
-        target: EntityTracker.TrackedEntity,
-        pkt: PlayerAuthInputPacket,
-        session: RubidiumRelaySession
-    ) {
-        val nowMs = System.currentTimeMillis()
-        if (lastLockTarget != target || lockLastTickMs <= 0L) {
-            lastLockTarget = target
-            lockLastTickMs = nowMs
-            lockRadius = orbitRadius.value.coerceAtLeast(MIN_LOCK_RADIUS)
-        }
-        val dt = (nowMs - lockLastTickMs).coerceIn(0L, 250L) / 1000f
-        lockLastTickMs = nowMs
-
-        // Current geometry
-        val ox = EntityTracker.selfX - target.x
-        val oz = EntityTracker.selfZ - target.z
-        val r  = sqrt(ox * ox + oz * oz).coerceAtLeast(0.5f)
-        val outX = ox / r; val outZ = oz / r
-        val tanX = -outZ;  val tanZ = outX   // 90° CCW
-
-        // FORWARD/BACK retunes the persistent orbit radius
-        val radiusMin = maxOf(MIN_LOCK_RADIUS, 0.5f)
-        val radiusMax = orbitRadius.value.coerceAtLeast(radiusMin)
-        val fwdIn = pkt.motion.y
-        when {
-            fwdIn >  0.25f -> lockRadius = (lockRadius - orbitSpeed.value * 0.5f * dt).coerceAtLeast(radiusMin)
-            fwdIn < -0.25f -> lockRadius = (lockRadius + orbitSpeed.value * 0.5f * dt).coerceAtMost(radiusMax)
-        }
-
-        // LEFT/RIGHT: orbit direction. Held = circle; released = hold.
-        // If orbitWhileIdle is on, default direction is CCW when no input.
-        val spinDir = when {
-            pkt.inputData.contains(PlayerAuthInputData.LEFT)  ->  1f
-            pkt.inputData.contains(PlayerAuthInputData.RIGHT) -> -1f
-            orbitWhileIdle.value                              ->  lockSpinDir
-            else                                              ->  0f
-        }
-        // Remember last held direction so orbitWhileIdle resumes smoothly
-        if (pkt.inputData.contains(PlayerAuthInputData.LEFT))  lockSpinDir =  1f
-        if (pkt.inputData.contains(PlayerAuthInputData.RIGHT)) lockSpinDir = -1f
-
-        // Radial correction — stiffer when too close (anti-face-hug)
-        val stiffness = orbitStiffness.value / 100f
-        val radialError = r - lockRadius
-        val radialGain  = (if (radialError < 0f) 1.4f else 0.7f) * stiffness
-        val vRadial = (-radialError * radialGain)
-            .coerceIn(-orbitSpeed.value, orbitSpeed.value)
-
-        // Tangential — proportional to orbit speed
-        val vTangent = spinDir * orbitSpeed.value
-
-        // Combine in world space
-        val vx = vRadial * outX + vTangent * tanX
-        val vz = vRadial * outZ + vTangent * tanZ
-
-        // Walking-scale clamp per tick
-        val stepLen = sqrt(vx * vx + vz * vz) * dt
-        val stepCap = orbitSpeed.value * dt
-        val scale   = if (stepLen > stepCap && stepLen > 1e-5f) stepCap / stepLen else 1f
-
-        // Apply as a DELTA — never a position set
-        val nx = EntityTracker.selfX + vx * dt * scale
-        val nz = EntityTracker.selfZ + vz * dt * scale
-        val ny = pkt.position.y
-
-        pkt.position = Vector3f.from(nx, ny, nz)
-        EntityTracker.selfX = nx
-        EntityTracker.selfY = ny
-        EntityTracker.selfZ = nz
-        PacketUtil.sendMove(
-            session, nx, ny, nz,
-            EntityTracker.selfYaw, EntityTracker.selfPitch,
-            onGround = true, teleport = false, mirrorToClient = true
-        )
-
-        // Facing — aim at the target's head
-        val dx = target.x - EntityTracker.selfX
-        val dz = target.z - EntityTracker.selfZ
-        val targetYaw = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
-        rotAngle = Pair(EntityTracker.selfPitch, wrapYaw(targetYaw))
-        shouldRot = true
-    }
-
     private fun wrapYaw(yaw: Float): Float {
         var y = yaw % 360f
         if (y > 180f) y -= 360f
@@ -661,17 +656,10 @@ class KillAura : BaseModule(
             return
         }
 
-        // ── Rotation / movement ────────────────────────────
-        when (rotMode.value) {
-            RotationMode.RANDOM      -> applyRandomRotation(primary)
-            RotationMode.TARGET_LOCK -> applyTargetLock(primary, pkt, session)
-            RotationMode.ORBIT       -> applyOrbit(primary, pkt, session)
-            RotationMode.SOFT_LOCK   -> applySoftLock(primary, pkt)
-            RotationMode.NONE,
-            RotationMode.AIM         -> calculateRotationKillAura3(primary, pkt)
-        }
-        if (shouldRot && rotMode.value != RotationMode.NONE) {
-            val (pitch, yaw) = rotAngle
+        rotationController.update(rotMode.value, primary, pkt, session)
+        val rotation = rotationController.consume()
+        if (rotation != null) {
+            val (pitch, yaw) = rotation
             pkt.rotation = Vector3f.from(pitch, yaw, yaw)
             if (!silentRot.value) {
                 EntityTracker.selfYaw = yaw
@@ -716,7 +704,7 @@ class KillAura : BaseModule(
 
         val realSlot = EntityTracker.selfHotbarSlot.coerceIn(0, 8)
         val bestSlot = if (weaponSwitch.value == WeaponSwitchMode.NONE) realSlot
-                       else bestWeaponSlot().takeIf { it in 0..8 } ?: realSlot
+        else bestWeaponSlot().takeIf { it in 0..8 } ?: realSlot
         val switched = weaponSwitch.value != WeaponSwitchMode.NONE && bestSlot != realSlot
         if (switched) InventoryUtil.sendHotbarSelect(session, bestSlot)
 
@@ -748,6 +736,3 @@ class KillAura : BaseModule(
         event.cancelAndReplace(pkt)
     }
 }
-```
-
----
