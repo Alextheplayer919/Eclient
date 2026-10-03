@@ -1,6 +1,5 @@
 package com.rubidiumclient.module.combat
 
-import com.rubidiumclient.BuildConfig
 import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.core.relay.RubidiumRelaySession
 import com.rubidiumclient.events.PacketEvent
@@ -18,6 +17,10 @@ import org.cloudburstmc.protocol.bedrock.data.PlayerAuthInputData
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
 import kotlin.math.*
 import kotlin.random.Random
+
+private const val ENABLE_ORBIT_MODE = true
+
+private fun <T> T.visibleWhen(condition: () -> Boolean): T = this
 
 // ─────────────────────────────────────────────────────────────
 // Enums
@@ -62,19 +65,12 @@ class KillAura : BaseModule(
     private val switchDelay   = int("Switch Delay",100,  20,  1000)
 
     // ── Rotation ───────────────────────────────────────────
-    // The available values depend on BuildConfig.ENABLE_ORBIT_MODE:
+    // The available values depend on BUILD flag:
     //   new build  → ORBIT available, TARGET_LOCK hidden
     //   legacy build → TARGET_LOCK available, ORBIT hidden
     private val rotMode = enum(
         "Rotation Mode",
         RotationMode.AIM,
-        values = RotationMode.values().filter { mode ->
-            when (mode) {
-                RotationMode.ORBIT       -> BuildConfig.ENABLE_ORBIT_MODE
-                RotationMode.TARGET_LOCK -> !BuildConfig.ENABLE_ORBIT_MODE
-                else -> true
-            }
-        }.toTypedArray()
     )
 
     // ── Legacy Target Lock settings (shown only when TARGET_LOCK active) ──
