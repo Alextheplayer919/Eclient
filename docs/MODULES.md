@@ -120,11 +120,13 @@ Forces every hit to crit by injecting the micro-position packets vanilla jump-cr
 - **Reads**: `InventoryTransactionPacket`, `MovePlayerPacket`, `MovePacket`.
 - **Key functions**: `injectFast`, `injectUltraFast`, `injectVanilla`, `injectPacket`; shares `tpAuraRecentlyMovedSelf` with TPAura.
 
-### CrystalAura — `module/combat/CrystalAura.kt` (549 lines)
-Places and breaks end crystals at the max-damage base, with explosion-damage simulation and blacklisting/timeouts.
-- **Settings**: Range (5f, 3–10), Min Place Damage (4f), Max Self Damage (8f), Min Break Damage (1f).
-- **Reads**: `AddEntityPacket` (crystal entity spawn confirmation), `LevelEventPacket`.
-- **Key functions**: `pickTarget`, `tryExplodeBest`, `tryPlace` (→ `PlacementUtil`), `findAdjacentFootBase`, `fireIdPredictions`, `buildBestBase`/`searchPlaceBase`, `simulateExplosionDamage`/`explosionDamage`/`exposureTo`/`isRayBlocked`, `attackCrystal`, `pruneBlacklist`, `checkTimedOutPlacements`.
+### CrystalAura — `module/combat/CrystalAura.kt`
+Places and breaks end crystals using explosion-damage scoring, with server-confirmed base placement and crystal-spawn checks.
+- **Settings**: Range, Auto Obsidian, Foot Priority, Silent Rotation, Min Place Damage, Max Self Damage, Min Break Damage.
+- **Placement flow**: Prefer a usable obsidian/bedrock block at the target's feet, otherwise place obsidian on a server-known supported cell and wait for the server block update before simulating damage or placing a crystal.
+- **Rotation/validation**: Silent aim modifies outbound movement rotation only for both placement and crystal attacks; target runtime id/position, crystal id/damage, base block, and two-block clearance are rechecked against server-tracked state immediately before use.
+- **Reads**: `AddEntityPacket` (crystal spawn confirmation), `LevelEventPacket`, outbound movement packets (silent rotation), and `WorldBlockTracker` server block updates.
+- **Key functions**: `pickTarget`, `advancePendingObsidian`, `tryExplodeBest`, `tryPlace`, `findAdjacentFootBase`, `findObsidianSpot`, `fireIdPredictions`, `buildBestBase`/`searchPlaceBase`, `simulateExplosionDamage`/`exposureTo`/`isRayBlocked`, `attackCrystal`, `pruneBlacklist`, `checkTimedOutPlacements`.
 
 ### AntiCrystal — `module/combat/AntiCrystal.kt` (PLAYER category, 31 lines)
 Reports a slightly lowered position to reduce crystal explosion damage taken.
