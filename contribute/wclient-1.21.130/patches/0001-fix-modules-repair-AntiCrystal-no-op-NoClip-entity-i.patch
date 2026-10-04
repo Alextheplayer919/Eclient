@@ -1,0 +1,90 @@
+From 99fa52fadf9ee2618306d695946bfe723245e5a0 Mon Sep 17 00:00:00 2001
+From: Alextheplayer919 <187066534+Alextheplayer919@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 09:21:59 +0000
+Subject: [PATCH 1/4] fix(modules): repair AntiCrystal no-op, NoClip entity id,
+ register KeyStrokes
+
+AntiCrystalModule: Cloudburst's Vector3f is immutable, so
+`packet.position.add(0.0, -ylevel, 0.0)` discarded its result and the module
+did nothing at all. The new position is now assigned back, which is the
+behaviour the `ylevel` setting always intended.
+
+NoClipModule: the vertical no-clip SetEntityMotionPacket addressed
+`localPlayer.uniqueEntityId` instead of `runtimeEntityId`. SetEntityMotion
+targets entities by runtime id, so the packet named nothing and vertical
+movement was silently dropped. Every other module in the tree that builds this
+packet uses the runtime id; this one now matches.
+
+KeyStrokesModule: the file existed (152 lines, 10 settings, plus its
+KeyStrokesOverlay) but was never added to ModuleManager, leaving it
+unreachable from the module list, the settings UI and the `.command` handler.
+It is now registered like every other Misc module.
+---
+ .../com/retrivedmods/wclient/game/ModuleManager.kt     |  2 ++
+ .../wclient/game/module/combat/AntiCrystalModule.kt    | 10 +++++++++-
+ .../wclient/game/module/motion/NoClipModule.kt         |  4 +++-
+ 3 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/app/src/main/java/com/retrivedmods/wclient/game/ModuleManager.kt b/app/src/main/java/com/retrivedmods/wclient/game/ModuleManager.kt
+index 9e32f08..8b1949f 100644
+--- a/app/src/main/java/com/retrivedmods/wclient/game/ModuleManager.kt
++++ b/app/src/main/java/com/retrivedmods/wclient/game/ModuleManager.kt
+@@ -27,6 +27,7 @@ import com.retrivedmods.wclient.game.module.visual.CoordinatesModule
+ import com.retrivedmods.wclient.game.module.misc.DesyncModule
+ import com.retrivedmods.wclient.game.module.misc.FakeDeathModule
+ import com.retrivedmods.wclient.game.module.misc.FakeXPModule
++import com.retrivedmods.wclient.game.module.misc.KeyStrokesModule
+ import com.retrivedmods.wclient.game.module.misc.MinerModule
+ import com.retrivedmods.wclient.game.module.misc.NoChatModule
+ import com.retrivedmods.wclient.game.module.misc.PieChartModule
+@@ -159,6 +160,7 @@ object ModuleManager {
+             add(FakeDeathModule())
+             add(FakeXPModule())
+             add(MinerModule())
++            add(KeyStrokesModule())
+         }
+     }
+ 
+diff --git a/app/src/main/java/com/retrivedmods/wclient/game/module/combat/AntiCrystalModule.kt b/app/src/main/java/com/retrivedmods/wclient/game/module/combat/AntiCrystalModule.kt
+index d772e96..832d9b8 100644
+--- a/app/src/main/java/com/retrivedmods/wclient/game/module/combat/AntiCrystalModule.kt
++++ b/app/src/main/java/com/retrivedmods/wclient/game/module/combat/AntiCrystalModule.kt
+@@ -4,6 +4,7 @@ package com.retrivedmods.wclient.game.module.combat
+ import com.retrivedmods.wclient.game.InterceptablePacket
+ import com.retrivedmods.wclient.game.Module
+ import com.retrivedmods.wclient.game.ModuleCategory
++import org.cloudburstmc.math.vector.Vector3f
+ import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
+ 
+ class AntiCrystalModule : Module("anti_crystal", ModuleCategory.Combat) {
+@@ -17,7 +18,14 @@ class AntiCrystalModule : Module("anti_crystal", ModuleCategory.Combat) {
+ 
+         val packet = interceptablePacket.packet
+         if (packet is PlayerAuthInputPacket) {
+-            packet.position.add(0.0, -ylevel.toDouble(), 0.0)
++            // Cloudburst's Vector3f is immutable: add() returns a NEW vector, so the
++            // result has to be assigned back — otherwise this module is a no-op.
++            val position = packet.position
++            packet.position = Vector3f.from(
++                position.x,
++                position.y - ylevel,
++                position.z
++            )
+         }
+     }
+ 
+diff --git a/app/src/main/java/com/retrivedmods/wclient/game/module/motion/NoClipModule.kt b/app/src/main/java/com/retrivedmods/wclient/game/module/motion/NoClipModule.kt
+index 6a422c0..2070aa0 100644
+--- a/app/src/main/java/com/retrivedmods/wclient/game/module/motion/NoClipModule.kt
++++ b/app/src/main/java/com/retrivedmods/wclient/game/module/motion/NoClipModule.kt
+@@ -106,7 +106,9 @@ class NoClipModule : Module("no_clip", ModuleCategory.Motion) {
+ 
+                 if (verticalMotion != 0f) {
+                     val motionPacket = SetEntityMotionPacket().apply {
+-                        runtimeEntityId = session.localPlayer.uniqueEntityId
++                        // Runtime (not unique) entity id: SetEntityMotion targets the
++                        // entity by runtime id, so the unique id addressed nothing.
++                        runtimeEntityId = session.localPlayer.runtimeEntityId
+                         motion = Vector3f.from(0f, verticalMotion, 0f)
+                     }
+                     session.clientBound(motionPacket)

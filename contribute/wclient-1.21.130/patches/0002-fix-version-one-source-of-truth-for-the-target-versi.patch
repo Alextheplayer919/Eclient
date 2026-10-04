@@ -1,0 +1,80 @@
+From 330f8786a37e2e34039242415967e1b0cb9158ea Mon Sep 17 00:00:00 2001
+From: Alextheplayer919 <187066534+Alextheplayer919@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 09:22:02 +0000
+Subject: [PATCH 2/4] fix(version): one source of truth for the target version
+ (1.21.130 / protocol 898)
+
+The version string lived in three places that disagreed:
+
+  MinecraftUtils.RECOMMENDED_VERSION = "v1.21.132"   (shown in the UI)
+  RealmsManager.CLIENT_VERSION       = "1.21.120"   (sent to the Realms API)
+  CodecRegistry / VersionDetector    = "1.21.130"   (protocol 898)
+
+Protocol 898 covers the 1.21.130-1.21.132 hotfix family, so the vendored codec
+label wins: MinecraftUtils now owns TARGET_PROTOCOL (898) and MC_VERSION
+("1.21.130"), and RECOMMENDED_VERSION is derived from it. RealmsManager reads
+MC_VERSION instead of its own hardcoded string.
+
+Next version bump is now a one-line change.
+---
+ .../wclient/service/RealmsManager.kt          |  5 +++-
+ .../wclient/util/MinecraftUtils.kt            | 27 +++++++++++++++++--
+ 2 files changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/app/src/main/java/com/retrivedmods/wclient/service/RealmsManager.kt b/app/src/main/java/com/retrivedmods/wclient/service/RealmsManager.kt
+index 64f9b6f..4ef930c 100644
+--- a/app/src/main/java/com/retrivedmods/wclient/service/RealmsManager.kt
++++ b/app/src/main/java/com/retrivedmods/wclient/service/RealmsManager.kt
+@@ -12,12 +12,15 @@ import com.retrivedmods.wclient.model.RealmWorld
+ import com.retrivedmods.wclient.model.RealmConnectionDetails
+ import com.retrivedmods.wclient.model.RealmState
+ import com.retrivedmods.wclient.model.RealmsLoadingState
++import com.retrivedmods.wclient.util.MinecraftUtils
+ import java.util.concurrent.ConcurrentHashMap
+ 
+ object RealmsManager {
+ 
+     private const val TAG = "RealmsManager"
+-    private const val CLIENT_VERSION = "1.21.120"
++    // Single source of truth: MinecraftUtils.MC_VERSION (was a hardcoded "1.21.120"
++    // that disagreed with both the UI string and the codec label).
++    private const val CLIENT_VERSION = MinecraftUtils.MC_VERSION
+ 
+     private val coroutineScope = CoroutineScope(Dispatchers.IO + CoroutineName("RealmsManagerCoroutine"))
+ 
+diff --git a/app/src/main/java/com/retrivedmods/wclient/util/MinecraftUtils.kt b/app/src/main/java/com/retrivedmods/wclient/util/MinecraftUtils.kt
+index a33f3c4..dd86756 100644
+--- a/app/src/main/java/com/retrivedmods/wclient/util/MinecraftUtils.kt
++++ b/app/src/main/java/com/retrivedmods/wclient/util/MinecraftUtils.kt
+@@ -1,5 +1,28 @@
+ package com.retrivedmods.wclient.util
+ 
++/**
++ * Single source of truth for the Minecraft version this build targets.
++ *
++ * Before this existed, the version was written out in three different places and
++ * all three disagreed:
++ *
++ *   - [RECOMMENDED_VERSION] (this file) advertised "v1.21.132" in the UI,
++ *   - `RealmsManager.CLIENT_VERSION` told the Realms API "1.21.120",
++ *   - `VersionDetector` / `CodecRegistry` labelled protocol 898 as "1.21.130".
++ *
++ * Protocol 898 covers the 1.21.130 - 1.21.132 hotfix family, so one string has to
++ * win. The target is 1.21.130 because that is what the vendored codec
++ * (`Bedrock_v898`) and the registry label already say. Everything user-facing or
++ * server-facing now reads from here, so the next bump is a one-line change.
++ */
+ object MinecraftUtils {
+-    const val RECOMMENDED_VERSION = "v1.21.132"
+-}
+\ No newline at end of file
++
++    /** Protocol version of the target build — protocol 898 = the 1.21.130 family. */
++    const val TARGET_PROTOCOL: Int = 898
++
++    /** Human-readable version string of the target build. */
++    const val MC_VERSION: String = "1.21.130"
++
++    /** UI display string (kept as the "v"-prefixed form the home screen already used). */
++    const val RECOMMENDED_VERSION: String = "v$MC_VERSION"
++}

@@ -1,0 +1,237 @@
+From 3e5f8e302e79a8a8174829de11281476072ecc31 Mon Sep 17 00:00:00 2001
+From: Alextheplayer919 <187066534+Alextheplayer919@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 09:22:05 +0000
+Subject: [PATCH 3/4] feat(motion): port the LeHu/Testfly MotionFly motion
+ model
+
+Replaces this module's motion model with the one from the standalone client's
+MotionFly, which was described there as a "LeHu-style fly (Testfly port)" and
+which the owner rates higher than the current implementation.
+
+Motion model that came over:
+  - speeds in blocks-per-second, converted per tick with / 20
+  - hard horizontal ceiling of sqrt(5.99), the vanilla per-tick clamp
+  - separate up/down horizontal factors, so climbing costs horizontal speed
+  - glide as the no-input vertical rate (default -0.02, a slow settle)
+  - input -> world transform against the packet's own yaw, then normalised to
+    exactly the requested horizontal speed rather than trusting the raw input
+  - anti-rubberband: a position jump beyond 4.5 blocks since the last tick is a
+    server correction, so that tick is skipped instead of fought
+
+Deliberately NOT ported, because they are separate subsystems rather than part
+of MotionFly:
+  - the collision guard (needs a live world block tracker; this client does not
+    build one)
+  - the movement-compliance governor (needs a correction feed from the other
+    client's lagback module)
+
+Kept from this client's old implementation: "Grant Fly Ability" (default off)
+reproduces the ability packets the old module sent on its own, for servers where
+injected motion alone is not enough. Off by default so the ported behaviour is
+what ships.
+
+onDisabled() now calls super so the toggle message and sound match every other
+module (previously only enabling produced feedback).
+---
+ .../game/module/motion/MotionFlyModule.kt     | 155 +++++++++++++-----
+ 1 file changed, 114 insertions(+), 41 deletions(-)
+
+diff --git a/app/src/main/java/com/retrivedmods/wclient/game/module/motion/MotionFlyModule.kt b/app/src/main/java/com/retrivedmods/wclient/game/module/motion/MotionFlyModule.kt
+index d43c6ad..ff03731 100644
+--- a/app/src/main/java/com/retrivedmods/wclient/game/module/motion/MotionFlyModule.kt
++++ b/app/src/main/java/com/retrivedmods/wclient/game/module/motion/MotionFlyModule.kt
+@@ -13,18 +13,56 @@ import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
+ import org.cloudburstmc.protocol.bedrock.packet.SetEntityMotionPacket
+ import org.cloudburstmc.protocol.bedrock.packet.UpdateAbilitiesPacket
+ import kotlin.math.cos
++import kotlin.math.min
+ import kotlin.math.sin
+-
++import kotlin.math.sqrt
++
++/**
++ * MotionFly — the LeHu/Testfly-style motion model.
++ *
++ * Ported from the standalone client's `MotionFly` (which described itself as a
++ * "LeHu-style fly (Testfly port)"), adapted to this codebase's module API.
++ *
++ * WHAT CAME OVER (the actual motion model):
++ *   - speeds expressed in blocks-per-second and converted per tick with `/ 20`
++ *   - a hard horizontal ceiling of `sqrt(5.99)` (the vanilla per-tick clamp)
++ *   - separate up/down horizontal factors, so climbing cuts horizontal speed
++ *   - `glide` as the no-input vertical rate (default -0.02: a slow settle)
++ *   - input → world transform against the packet's own yaw, then normalise to
++ *     exactly the requested horizontal speed instead of trusting the raw input
++ *   - the anti-rubberband distance check: if the reported position jumped more
++ *     than 4.5 blocks since the last tick, the server moved us, so that tick is
++ *     skipped rather than fought
++ *
++ * WHAT DID NOT COME OVER (deliberately — they are other subsystems, not MotionFly):
++ *   - the collision guard (needs a live world block tracker, which this client
++ *     does not build)
++ *   - the movement-compliance governor (needs a correction feed from the other
++ *     client's lagback module)
++ *   If you want either, they are separate pieces of work, not part of this port.
++ *
++ * WHAT THIS FILE ADDS BACK (this client's own plumbing):
++ *   - `Grant Fly Ability` (default off) reproduces what this module used to do on
++ *     its own: while enabled, send the ability packets that let the client fly.
++ *     The ported motion model does not need it, so it is off by default; turn it
++ *     on for servers where injected motion alone is not enough.
++ */
+ class MotionFlyModule : Module("MotionFly", ModuleCategory.Motion) {
+ 
+-    private val horizontalSpeed by floatValue("Horizontal Speed", 3.5f, 0.5f..10.0f)
+-    private val verticalSpeed by floatValue("Vertical Speed", 1.5f, 0.5f..5.0f)
+-    private val glideSpeed by floatValue("Glide Speed", 0.1f, -0.01f..1.0f)
+-    private val bypassMode by boolValue("Lifeboat Bypass", true)
+-    private val motionInterval by floatValue("Delay", 50.0f, 10.0f..100.0f)
++    // ── Speeds (blocks per second) ─────────────────────────────────────────
++    private val hSpeedBps by floatValue("H Speed BPS", 46.0f, 1.0f..100.0f)
++    private val upSpeedBps by floatValue("Up Speed BPS", 19.8f, 1.0f..60.0f)
++    private val downSpeedBps by floatValue("Down Speed BPS", 46.0f, 1.0f..60.0f)
++    private val glide by floatValue("Glide", -0.02f, -0.3f..0f)
++    private val upHFactor by floatValue("Up H Factor", 0.55f, 0.1f..1.0f)
++    private val downHFactor by floatValue("Down H Factor", 0.55f, 0.1f..1.0f)
++
++    // ── This client's optional ability grant ───────────────────────────────
++    private val grantFlyAbility by boolValue("Grant Fly Ability", false)
+ 
+-    private var lastMotionTime = 0L
+-    private var jitterState = false
++    private val maxHorizSpeed = sqrt(5.99).toFloat()
++
++    private var lastPos = Vector3f.ZERO
+     private var canFly = false
+ 
+     private val flyPacket = UpdateAbilitiesPacket().apply {
+@@ -79,60 +117,95 @@ class MotionFlyModule : Module("MotionFly", ModuleCategory.Motion) {
+     }
+ 
+     private fun applyFlyAbilities(enabled: Boolean) {
+-        if (canFly != enabled) {
+-            val id = session.localPlayer.uniqueEntityId
+-            flyPacket.uniqueEntityId = id
+-            resetPacket.uniqueEntityId = id
+-            session.clientBound(if (enabled) flyPacket else resetPacket)
+-            canFly = enabled
+-        }
++        if (!isSessionCreated) return
++        if (canFly == enabled) return
++
++        val id = session.localPlayer.uniqueEntityId
++        flyPacket.uniqueEntityId = id
++        resetPacket.uniqueEntityId = id
++        session.clientBound(if (enabled) flyPacket else resetPacket)
++        canFly = enabled
+     }
+ 
+     override fun beforePacketBound(interceptablePacket: InterceptablePacket) {
++        if (!isEnabled) return
++
+         val packet = interceptablePacket.packet
+-        if (!isEnabled || packet !is PlayerAuthInputPacket) return
++        if (packet !is PlayerAuthInputPacket) return
++        if (!isSessionCreated) return
++
++        if (grantFlyAbility) applyFlyAbilities(true)
++
++        val player = session.localPlayer
++        val selfPos = Vector3f.from(player.posX, player.posY, player.posZ)
+ 
+-        applyFlyAbilities(true)
++        // Anti-rubberband: a jump this large is a server correction, not our motion.
++        val dx = selfPos.x - lastPos.x
++        val dy = selfPos.y - lastPos.y
++        val dz = selfPos.z - lastPos.z
++        if (sqrt(dx * dx + dy * dy + dz * dz) > RUBBERBAND_DISTANCE) {
++            lastPos = selfPos
++            return
++        }
+ 
+-        val now = System.currentTimeMillis()
+-        if (now - lastMotionTime < motionInterval) return
++        val wantUp = packet.inputData.contains(PlayerAuthInputData.WANT_UP) ||
++            packet.inputData.contains(PlayerAuthInputData.JUMPING)
++        val wantDown = packet.inputData.contains(PlayerAuthInputData.WANT_DOWN) ||
++            packet.inputData.contains(PlayerAuthInputData.SNEAKING)
+ 
+-        val vertical = when {
+-            packet.inputData.contains(PlayerAuthInputData.WANT_UP) -> verticalSpeed
+-            packet.inputData.contains(PlayerAuthInputData.WANT_DOWN) -> -verticalSpeed
+-            bypassMode -> -glideSpeed.coerceAtLeast(-0.1f)
+-            else -> glideSpeed
++        val input = packet.motion
++        if (!wantUp && !wantDown && input.x == 0f && input.y == 0f && glide == 0f) {
++            lastPos = selfPos
++            return
+         }
+ 
++        // ── Horizontal speed ───────────────────────────────────────────────
++        var horizSpeed = min(hSpeedBps / 20f, maxHorizSpeed)
++        if (wantUp) horizSpeed *= upHFactor
++        if (wantDown) horizSpeed *= downHFactor
+ 
+-        val inputX = packet.motion.x
+-        val inputZ = packet.motion.y
++        // ── Vertical speed ─────────────────────────────────────────────────
++        val vertSpeed = when {
++            wantUp -> upSpeedBps / 20f
++            wantDown -> -downSpeedBps / 20f + glide
++            else -> glide
++        }
+ 
++        // ── Input → world, using the packet's own yaw ──────────────────────
+         val yawRad = Math.toRadians(packet.rotation.y.toDouble()).toFloat()
+         val sinYaw = sin(yawRad)
+         val cosYaw = cos(yawRad)
+ 
+-        val strafe = inputX * horizontalSpeed
+-        val forward = inputZ * horizontalSpeed
++        val strafe = input.x
++        val forward = input.y
+ 
+-        val motionX = strafe * cosYaw - forward * sinYaw
+-        val motionZ = forward * cosYaw + strafe * sinYaw
++        var motionX = strafe * cosYaw - forward * sinYaw
++        var motionZ = forward * cosYaw + strafe * sinYaw
+ 
+-        val motionPacket = SetEntityMotionPacket().apply {
+-            runtimeEntityId = session.localPlayer.runtimeEntityId
+-            motion = Vector3f.from(
+-                motionX,
+-                vertical + if (jitterState) 0.05f else -0.05f,
+-                motionZ
+-            )
++        val len = sqrt(motionX * motionX + motionZ * motionZ)
++        if (len > 0.001f) {
++            motionX = motionX / len * horizSpeed
++            motionZ = motionZ / len * horizSpeed
++        } else {
++            motionX = 0f
++            motionZ = 0f
+         }
+ 
+-        session.clientBound(motionPacket)
+-        jitterState = !jitterState
+-        lastMotionTime = now
++        session.clientBound(SetEntityMotionPacket().apply {
++            runtimeEntityId = player.runtimeEntityId
++            motion = Vector3f.from(motionX, vertSpeed, motionZ)
++        })
++
++        lastPos = selfPos
+     }
+ 
+     override fun onDisabled() {
+         applyFlyAbilities(false)
++        super.onDisabled()
++    }
++
++    private companion object {
++        /** Larger than any legitimate single-tick move — treat it as a correction. */
++        const val RUBBERBAND_DISTANCE = 4.5f
+     }
+-}
+\ No newline at end of file
++}

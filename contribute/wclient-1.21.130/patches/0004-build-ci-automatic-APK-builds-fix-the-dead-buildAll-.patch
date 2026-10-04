@@ -1,0 +1,160 @@
+From 5dc428b1ac241e12fe08e116e3cfad0599d7de96 Mon Sep 17 00:00:00 2001
+From: Alextheplayer919 <187066534+Alextheplayer919@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 09:22:11 +0000
+Subject: [PATCH 4/4] build(ci): automatic APK builds + fix the dead
+ buildAll/:desktop dependency
+
+Adds .github/workflows/build.yml:
+
+  - builds debug + release APKs on every push to main and arena/* branches,
+    on pull requests, and on demand from the Actions tab
+  - uploads both APKs as a workflow artifact (30 day retention)
+  - pushing a tag (WClientv37.0, v1.2.3, ...) additionally publishes a GitHub
+    Release with the release APK attached
+  - no secrets required: app/build.gradle.kts already signs with the committed
+    buildKey.jks. That key is public, so for a private key add keystore secrets
+    and swap the signingConfig block (noted in the workflow header)
+  - JDK 21, Android platform 36 + build-tools 36.0.0, Gradle caching
+
+Also fixes build.gradle.kts: "buildAll" and "buildDebugAll" depended on
+":desktop:shadowJar", but this repository has no :desktop module, so both tasks
+died with "Project 'desktop' not found" before building anything. They now
+depend on the app tasks, which is the only target that exists here.
+---
+ .github/workflows/build.yml | 98 +++++++++++++++++++++++++++++++++++++
+ build.gradle.kts            | 12 +++--
+ 2 files changed, 106 insertions(+), 4 deletions(-)
+ create mode 100644 .github/workflows/build.yml
+
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+new file mode 100644
+index 0000000..2bb3193
+--- /dev/null
++++ b/.github/workflows/build.yml
+@@ -0,0 +1,98 @@
++name: Build APK
++
++# Automatic app builds.
++#   - every push to main (and to arena/* working branches) builds a debug + release APK
++#   - pull requests build too, so a broken PR is visible before merge
++#   - pushing a tag (WClientv37.0, v1.2.3, ...) also publishes a GitHub Release
++#   - "Run workflow" in the Actions tab builds on demand
++#
++# Signing: app/build.gradle.kts already points at the committed buildKey.jks
++# (alias "UntrustedKey"), so CI needs no secrets. Be aware that key is public —
++# anyone can sign an APK that installs as an update over a build from this repo.
++# For a private key, add keystore secrets and swap the signingConfig block.
++
++on:
++  push:
++    branches: [ main, 'arena/**' ]
++    tags: [ 'WClientv*', 'v*' ]
++  pull_request:
++  workflow_dispatch:
++
++permissions:
++  contents: write
++
++concurrency:
++  group: build-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  build:
++    name: Assemble debug + release
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Set up JDK 21
++        uses: actions/setup-java@v4
++        with:
++          distribution: temurin
++          java-version: '21'
++
++      - name: Set up Android SDK
++        uses: android-actions/setup-android@v3
++
++      - name: Install SDK components
++        run: |
++          yes | sdkmanager --licenses > /dev/null 2>&1 || true
++          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
++
++      - name: Set up Gradle
++        uses: gradle/actions/setup-gradle@v4
++
++      - name: Assemble
++        run: ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace
++
++      - name: Upload APKs
++        uses: actions/upload-artifact@v4
++        with:
++          name: wclient-apk-${{ github.sha }}
++          path: |
++            app/build/outputs/apk/**/*.apk
++          if-no-files-found: error
++          retention-days: 30
++
++  release:
++    name: Publish release
++    needs: build
++    if: startsWith(github.ref, 'refs/tags/')
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Download APKs
++        uses: actions/download-artifact@v4
++        with:
++          name: wclient-apk-${{ github.sha }}
++          path: apk
++
++      - name: Collect release APK
++        run: |
++          set -e
++          release_apk=$(find apk -path '*release*' -name '*.apk' | head -n 1)
++          if [ -z "$release_apk" ]; then
++            echo "No release APK found, aborting"
++            find apk -name '*.apk'
++            exit 1
++          fi
++          cp "$release_apk" "WClient-${GITHUB_REF_NAME}.apk"
++          ls -la "WClient-${GITHUB_REF_NAME}.apk"
++
++      - name: Create GitHub Release
++        uses: softprops/action-gh-release@v2
++        with:
++          files: WClient-${{ github.ref_name }}.apk
++          name: WClient ${{ github.ref_name }}
++          generate_release_notes: true
++          draft: false
++          prerelease: false
+diff --git a/build.gradle.kts b/build.gradle.kts
+index bc96b87..6a972e2 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -8,14 +8,18 @@ plugins {
+     id("com.github.johnrengelman.shadow") version "8.1.1" apply false
+ }
+ 
++// NOTE: these used to depend on ":desktop:shadowJar", but this repository has no
++// :desktop module (see settings.gradle.kts), so both tasks failed with
++// "Project 'desktop' not found" before building anything. They now build the
++// Android app, which is the only target actually present.
+ tasks.register("buildAll") {
+     group = "build"
+-    description = "Builds both Android APK and Desktop JAR"
+-    dependsOn(":app:assembleRelease", ":desktop:shadowJar")
++    description = "Builds the release APK"
++    dependsOn(":app:assembleRelease")
+ }
+ 
+ tasks.register("buildDebugAll") {
+     group = "build"
+-    description = "Builds both Android Debug APK and Desktop JAR"
+-    dependsOn(":app:assembleDebug", ":desktop:shadowJar")
++    description = "Builds the debug APK"
++    dependsOn(":app:assembleDebug")
+ }
+\ No newline at end of file
