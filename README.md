@@ -75,11 +75,11 @@ public chat — and anything that isn't an exact registered command passes throu
 - **AutoTorch** — keeps hostile mobs from spawning around you; drives placement from researched
   Bedrock light-level spawn rules.
 
-### 📊 Module breakdown (74 registered)
+### 📊 Module breakdown (75 registered)
 
 | Category | Count | Examples |
 |---|---|---|
-| ⚔️ Combat | 21 | KillAura / LegitAura / TPAura, CrystalAura, AnchorAura, AutoTotem, AutoArmor |
+| ⚔️ Combat | 22 | KillAura / RotsAura / LegitAura / TPAura, CrystalAura, AnchorAura, AutoTotem, AutoArmor |
 | 🏃 Movement | 19 | MotionFly, LifeboatFly, NoClip, FreeCam, Scaffold, AntiKnockback |
 | 👁 Visual | 15 | ESP, Xray, FullBright, Hitbox render, ArrayList |
 | 🧍 Player | 7 | GodMode, AntiAFK, NoFallDamage |

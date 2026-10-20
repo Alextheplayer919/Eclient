@@ -35,8 +35,21 @@ class IntSetting(name: String, default: Int, val min: Int, val max: Int) : Modul
     override var value: Int = if (min <= max) default.coerceIn(min, max) else default
 }
 
-class EnumSetting<T : Enum<T>>(name: String, default: T, val values: Array<T>) : ModuleSetting<T>(name) {
+class EnumSetting<T : Enum<T>>(
+    name: String,
+    default: T,
+    val values: Array<T>,
+    /**
+     * Optional human-readable label per value. The enum NAME is still what gets
+     * persisted in configs (Config.kt serialises `value.name`), so adding labels
+     * never breaks an existing saved setting — the UI just shows something nicer
+     * than "Lynx_smooth".
+     */
+    private val labels: Map<T, String> = emptyMap()
+) : ModuleSetting<T>(name) {
     override var value: T = default
+
+    fun labelOf(v: T): String = labels[v] ?: v.name
     fun next(): T {
         val idx = (values.indexOf(value) + 1) % values.size
         value = values[idx]
@@ -122,6 +135,10 @@ abstract class BaseModule(
 
     protected inline fun <reified T : Enum<T>> enum(name: String, default: T) =
         EnumSetting(name, default, enumValues<T>()).also { settings.add(it) }
+
+    /** Same as the overload above, but the UI shows [labels] instead of the enum names. */
+    protected inline fun <reified T : Enum<T>> enum(name: String, default: T, labels: Map<T, String>) =
+        EnumSetting(name, default, enumValues<T>(), labels).also { settings.add(it) }
 
     protected fun string(name: String, default: String) =
         StringSetting(name, default).also { settings.add(it) }
