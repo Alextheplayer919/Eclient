@@ -186,9 +186,9 @@ class PredictiveRotator {
             rotation = Vector3f.from(pitch, yaw, yaw)
             mode = MovePlayerPacket.Mode.NORMAL
             // Sondeo de suelo igual que en Kiwi: hay colision vertical y no se esta subiendo.
-            onGround = packet.inputData.contains(PlayerAuthInputData.VERTICAL_COLLISION) &&
-                       motion.second <= 0f
-            ridingRuntimeEntityId = 0
+            isOnGround = packet.inputData.contains(PlayerAuthInputData.VERTICAL_COLLISION) &&
+                         motion.second <= 0f
+            ridingRuntimeEntityId = 0L
             tick = packet.tick
         })
     }

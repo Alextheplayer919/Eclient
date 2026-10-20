@@ -11,7 +11,7 @@ import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
  *
  * Los motores NO se tocan: esperan exactamente el mismo contrato que tenian en su cliente de
  * origen. Lo que cambia es quien les da los datos. En el original ese contrato lo daba
- * `game/kiwi/*` (entityFeetY, hitboxWidth, hitboxHeight, localEyeY) sobre `GameSession`/`Entity`;
+ * `game/kiwi/` (entityFeetY, hitboxWidth, hitboxHeight, localEyeY) sobre `GameSession`/`Entity`;
  * aqui hace lo mismo esta clase sobre [EntityTracker.TrackedEntity]:
  *
  *  - **Pies vs ojos.** `EntityTracker.selfY` puede venir en marco de ojos (PlayerAuthInput, canal
