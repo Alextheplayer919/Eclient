@@ -111,6 +111,7 @@ object ModuleManager {
             // ── COMBAT ──────────────────────────────────────────────
             KillAura(),
             KillAuraV3(),
+            RotsAura(),
             LegitAura(),
             TPAura(),
             SCRFighter(),

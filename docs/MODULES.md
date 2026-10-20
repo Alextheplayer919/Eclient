@@ -13,8 +13,8 @@ names. Only things actually used in the code are documented. Companion docs:
 `PROTOCOL.md` (Cloudburst usage inventory), `CORE-ARCHITECTURE.md` (relay +
 trackers + event bus), `README.md` (index).
 
-Registry: `module/ModuleManager.kt` auto-registers **75 module classes /
-76 runtime instances** (ComboShortcut twice) on first access. Three files
+Registry: `module/ModuleManager.kt` auto-registers **76 module classes /
+77 runtime instances** (ComboShortcut twice) on first access. Three files
 exist but are NOT registered (dead/experimental): `combat/PistonAura.kt`,
 `misc/ShulkerDupe.kt`, `visual/ShulkerPreview.kt`; `social/FriendManager.kt`
 is a plain helper, not a module.
@@ -49,7 +49,7 @@ Name drift (filename vs registered class) to keep greps sane:
 
 ---
 
-# COMBAT (24)
+# COMBAT (25)
 
 ### KillAura — `module/combat/KillAura.kt` (732 lines, biggest combat module)
 Melody-style kill aura: aim/random rotations, real target-lock strafe ("Quantum" target motion prediction), silent weapon switch, multi-target pools.
@@ -57,6 +57,16 @@ Melody-style kill aura: aim/random rotations, real target-lock strafe ("Quantum"
 - **Reads**: `MobEquipmentPacket`, `MovePlayerPacket`, `PlayerAuthInputPacket`.
 - **Key functions**: `selectTargets`, `isTarget`, `bestWeaponSlot` (silent switch candidate), prediction family — `predictWithQuantum`, `predictDynamic`, `predictAdvancedVelocity`, `predictPatternBased`, `predictNeural` (five interchangeable target-motion models); `calculateRotationKillAura3`, `applyRandomRotation` / `applySoftLock` / `applyTargetLock` (rotation styles), `wrapYaw`.
 - Deep doc: `MELODY_MODULES.md`.
+
+### RotsAura — `module/combat/RotsAura.kt` (~490 lines, + `module/combat/rots/`, ~1800 lines)
+KillAura port of KiwiMods' `KillauraModule` with the six Lynx/Kiwi rotation engines, added verbatim
+and bridged to `EntityTracker` through `rots/RotsSupport.kt`. 30 selectable `Rot Mode` values
+(Abysm, 4 Geo shapes, Predictive, 12 Kiwi, 11 Lynx handlers, HvHGod).
+- **Settings**: Range (6f, 1–20), CPS (20, 5–30), Packets (1, 1–10), Players Only (true), Anti Bot (true), Ignore Friends (true), Rot Mode (enum `RotMode.ABYSM`), Randomize (false), Smooth Speed (15f, 1–45), Strafe Amp (8f, 0–30), Vertical Offset (0.3f, −1..1), Silent Rotation (true), Pred Time (2f, 0–8), Pred Strength (1f, 0–1.5), Rot Smoothing (0.35f, 0.05–1), Rot Max Speed (30f, 5–90), Rot Accel (12f, 2–60), Camera Sync (true), Shortcut (false).
+- **Reads**: `PlayerAuthInputPacket` (rotation/position/inputData/tick/delta). **Sends** (Predictive + Camera Sync): `MovePlayerPacket` via `session.clientBound`; attacks via `PacketUtil.sendSwingAndAttack`.
+- **Key functions**: `onPacket` (mode dispatch), `searchForTargets` / `isTarget` / `isBot`, `computeLynxRotation` (builds `KillauraRots.Ctx/Target/Env`), `applyKiwiRotation`, `predictiveSettings`, `applyRotation`.
+- **Engines** (`rots/`): `KillauraRots` (12 handlers, static state cleared by `resetState()`), `PredictiveAim` (stateful) + `PredictiveRotator` (target-lock hysteresis + camera sync), `AbysmRot`, `GeoRot`, `HvHGod` (enemy-style classifier with `PROFILE` table), `RotsSupport` (feet/eye frames, hitbox, per-tick motion, input flags).
+- Deep doc: `ROTS_ENGINES.md`.
 
 ### AuraV3 — `module/combat/KillAuraPro.kt` (326 lines)
 2b2tpe-style aura port: keep-distance ring control, long range.

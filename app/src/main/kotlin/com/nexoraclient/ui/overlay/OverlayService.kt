@@ -1983,7 +1983,7 @@ private fun SettingRow(setting: ModuleSetting<*>, onShortcutChanged: () -> Unit)
                                 .padding(horizontal = 14.dp, vertical = 6.dp)
                         ) {
                             Text(
-                                opt.name.lowercase().replaceFirstChar { it.uppercase() },
+                                es.labelOf(opt),
                                 fontSize = 11.sp,
                                 color = if (isSel) RubidiumOnBackground else RubidiumOnSurface,
                                 fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal
