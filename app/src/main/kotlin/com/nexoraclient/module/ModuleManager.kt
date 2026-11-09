@@ -110,6 +110,7 @@ object ModuleManager {
         registerAll(
             // ── COMBAT ──────────────────────────────────────────────
             RotsAura(),
+            NeonAura(),
             HitboxModule(),
             Criticals(),
             AutoTotem(),
