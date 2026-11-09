@@ -71,8 +71,8 @@ intercept fired.
 own actions), `.reload` (session/codec reload semantics are hairy; configs
 already cover state).
 
-### KillAura friend/enemy ranking
+### Friend/enemy ranking in combat
 
-List storage + commands landed now; the targeting rule (enemies first →
-neutrals by distance → friends last-resort) is its own later milestone —
-combat logic gets a dedicated review pass.
+List storage + commands landed now. No aura module currently consumes the
+lists: the targeting rule (enemies first → neutrals by distance → friends
+last-resort) is unimplemented and belongs to a future combat module.

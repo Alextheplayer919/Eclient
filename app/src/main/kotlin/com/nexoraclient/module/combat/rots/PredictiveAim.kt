@@ -116,8 +116,8 @@ class PredictiveAim {
             return
         }
         if (tick < m.seenTick) { // el contador de ticks se reinicio (mundo nuevo)
-            m.seenTick = tick - 1
-            m.tick = tick
+            motions[id] = Motion(x, y, z, tick)
+            return
         }
         if (tick <= m.seenTick) return
         m.seenTick = tick
@@ -157,7 +157,8 @@ class PredictiveAim {
         if (sp > cfg.minSpeed && rsp > cfg.minSpeed) {
             val cos = (m.vx * rvx + m.vz * rvz) / (sp * rsp)
             turned = cos < TURN_COS
-        } else if (sp > cfg.minSpeed * 2f && rsp < sp * BRAKE_RATIO) {
+        }
+        if (sp > cfg.minSpeed * 2f && rsp < sp * BRAKE_RATIO) {
             braking = true
         }
 

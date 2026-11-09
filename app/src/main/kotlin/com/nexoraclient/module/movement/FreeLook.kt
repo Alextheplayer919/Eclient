@@ -4,7 +4,6 @@ import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
-import com.rubidiumclient.module.ModuleManager
 import com.rubidiumclient.utils.RotationUtil
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
@@ -48,12 +47,6 @@ class FreeLook : BaseModule(
         if (!isEnabled) return
         if (event.direction != PacketEvent.Direction.CLIENT_TO_SERVER) return
         val pkt = event.packet as? PlayerAuthInputPacket ?: return
-
-        // FIX (bkz. TPAura/KillAura koordinasyonu): TPAura açıkken rotasyon
-        // önceliği ona ait — FreeLook de aynı kurala uyup devre dışı kalıyor,
-        // aksi halde ikisi aynı tick'te farklı yaw göndermeye çalışıp
-        // rubber-band yaratır.
-        if (ModuleManager.byName("TPAura")?.isEnabled == true) return
 
         val curX = pkt.position.x
         val curZ = pkt.position.z

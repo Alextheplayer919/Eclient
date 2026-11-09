@@ -26,7 +26,7 @@ class HvHGod {
 
     enum class Style { SPINNER, JITTER, SNAP, AIR, STRAFER, LOCKED, IDLE, UNKNOWN }
 
-    private class Sample(val yaw: Float, val x: Float, val y: Float, val z: Float)
+    private class Sample(val yaw: Float, val x: Float, val y: Float, val z: Float, val tick: Long)
 
     private class Track {
         val samples = ArrayDeque<Sample>()
@@ -58,7 +58,7 @@ class HvHGod {
         if (tick < t.lastTick) { t.samples.clear(); t.lastTick = Long.MIN_VALUE } // mundo nuevo
         if (tick == t.lastTick) return
         t.lastTick = tick
-        t.samples.addLast(Sample(yaw, x, y, z))
+        t.samples.addLast(Sample(yaw, x, y, z, tick))
         while (t.samples.size > WINDOW) t.samples.removeFirst()
     }
 
@@ -93,7 +93,7 @@ class HvHGod {
         var sumAbs = 0f; var maxAbs = 0f; var signChanges = 0; var net = 0f
         var prevSign = 0
         for (i in 1 until s.size) {
-            val d = wrap180(s[i].yaw - s[i - 1].yaw)
+            val d = wrap180(s[i].yaw - s[i - 1].yaw) / (s[i].tick - s[i - 1].tick).coerceAtLeast(1L).toFloat()
             val a = abs(d)
             sumAbs += a; net += d
             if (a > maxAbs) maxAbs = a
@@ -116,9 +116,10 @@ class HvHGod {
 
         // ---- movimiento ----
         val first = s.first(); val last = s.last()
-        val vx = (last.x - first.x) / n
-        val vy = (last.y - first.y) / n
-        val vz = (last.z - first.z) / n
+        val elapsed = (last.tick - first.tick).coerceAtLeast(1L).toFloat()
+        val vx = (last.x - first.x) / elapsed
+        val vy = (last.y - first.y) / elapsed
+        val vz = (last.z - first.z) / elapsed
         val toMeX = meX - last.x; val toMeZ = meZ - last.z
         val dist = hypot(toMeX, toMeZ).coerceAtLeast(0.001f)
         val lateral = abs(vx * (-toMeZ / dist) + vz * (toMeX / dist))   // componente perpendicular

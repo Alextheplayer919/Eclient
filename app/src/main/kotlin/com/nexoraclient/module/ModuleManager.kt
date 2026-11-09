@@ -109,31 +109,10 @@ object ModuleManager {
     init {
         registerAll(
             // ── COMBAT ──────────────────────────────────────────────
-            KillAura(),
-            KillAuraV3(),
             RotsAura(),
-            LegitAura(),
-            TPAura(),
-            SCRFighter(),
-            HitAndRunProModule(),
-            TriggerBotModule(),
             HitboxModule(),
-            AutoHvHModule(),
-            InfiniteAuraModule(),
-            ACAModule(),
-            HotbarSwitcherModule(),
             Criticals(),
-            CrystalAura(),
-            AntiCrystal(),
-            AnchorAura(),
-            BedAura(),
-            AntiBed(),
-            AutoTrapModule(),
-            SelfTrapModule(),
-            CTrapModule(),
-            ObsidianMinerModule(),
             AutoTotem(),
-            AutoArmor(),
 
             // ── MOVEMENT ─────────────────────────────────────────────
             Speed(),

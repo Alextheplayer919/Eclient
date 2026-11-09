@@ -30,9 +30,9 @@ class Timer : BaseModule(
     private val stepDelayMs      = int  ("Step Delay (ms)",    12,   2,   50)
     private val minMoveThreshold = float("Min Move Threshold", 0.02f, 0f, 0.5f)
 
-    // PvP: TPAura/AuraV3'ün ham pozisyon sıçramalarını (Horizontal/Vertical
+    // PvP: tek-paket ham pozisyon sıçramalarını (Horizontal/Vertical
     // Speed) sunucuya "meşru" boyutta küçük adımlara bölünmüş gibi göstererek
-    // rubber-band'i (geri atmayı) engeller. Bkz. TimerPvP.kt.
+    // rubber-band'i (geri atmayı) engeller. Bkz. RubberbandGuard.kt.
     private val pvpMode          = bool ("PvP Timer",           false)
     private val pvpMaxStepSetting = float("PvP Max Step",       0.9f,  0.3f, 2.0f)
     private val pvpStepDelay     = int  ("PvP Step Delay (ms)", 12,    2,   40)

@@ -75,11 +75,11 @@ public chat — and anything that isn't an exact registered command passes throu
 - **AutoTorch** — keeps hostile mobs from spawning around you; drives placement from researched
   Bedrock light-level spawn rules.
 
-### 📊 Module breakdown (75 registered)
+### 📊 Module breakdown (55 registered)
 
 | Category | Count | Examples |
 |---|---|---|
-| ⚔️ Combat | 22 | KillAura / RotsAura / LegitAura / TPAura, CrystalAura, AnchorAura, AutoTotem, AutoArmor |
+| ⚔️ Combat | 3 | AutoTotem, Criticals, Hitbox |
 | 🏃 Movement | 19 | MotionFly, LifeboatFly, NoClip, FreeCam, Scaffold, AntiKnockback |
 | 👁 Visual | 15 | ESP, Xray, FullBright, Hitbox render, ArrayList |
 | 🧍 Player | 7 | GodMode, AntiAFK, NoFallDamage |
@@ -106,8 +106,7 @@ Full internals live in [`docs/`](docs/) — packet-level notes on every sweep:
 | [`MODULES.md`](docs/MODULES.md) | catalog of every module |
 | [`PROTOCOL.md`](docs/PROTOCOL.md) | Cloudburst packet usage inventory |
 | [`CORE-ARCHITECTURE.md`](docs/CORE-ARCHITECTURE.md) | relay/session/session-tracking model |
-| [`MELODY_MODULES.md`](docs/MELODY_MODULES.md) | native-side module notes |
-| plus | `ANTI_CAMPER_PLAYBOOK.md`, `NO_LAGBACK_V3*.md`, `ANTI_CAMPER_*` |
+| plus | `NO_LAGBACK_V3*.md` |
 
 ---
 
@@ -121,7 +120,6 @@ Full internals live in [`docs/`](docs/) — packet-level notes on every sweep:
   (placement printer, field-validated)
 
 **🚧 In progress**
-- Combat module overhaul (KillAura targeting/ranking revamp)
 - More world automation (schem-aware builders, travel improvements)
 
 ---

@@ -290,7 +290,7 @@ object ChatCommands : PacketEventBus.PacketListener {
         })
 
         reg(Def("enemy add", ".enemy add <name>", "social",
-            "Adds a player to the GLOBAL enemy list (priority input for KillAura).",
+            "Adds a player to the GLOBAL enemy list (stored for future combat modules).",
             ".enemy add Steve") { s, a ->
             val name = a.firstOrNull() ?: run { say(s, "§c[Cmd]§r usage: .enemy add <name>"); return@Def }
             if (FriendCommandHelper.addEnemy(s, name)) say(s, "§b[Enemies]§r §c+§f $name added")

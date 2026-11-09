@@ -68,7 +68,7 @@ the real server itself, so it needs the account, not the game.
 |---|---|
 | Relay is the one you joined | you joined the `rubidium` entry from Friends/LAN, not a typed address |
 | Modules see the world | panel shows entity count / the module list reacts; ESP, ArrayList, ArmorHud are the cheapest visual confirms |
-| Combat modules act | KillAura/CrystalAura-class modules fire on real players; the panel's own status lines update |
+| Combat modules act | Criticals/Hitbox fire on real players; the panel's own status lines update |
 | No silent death | `baba.txt` shows no repeated exception spam; the overlay stays responsive |
 
 ## 5. What to report, and how

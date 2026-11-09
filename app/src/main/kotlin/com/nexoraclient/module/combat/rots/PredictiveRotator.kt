@@ -132,6 +132,16 @@ class PredictiveRotator {
      * Mantiene el objetivo actual salvo que otro este claramente mas cerca y el actual lleve un
      * rato bloqueado. Evita que la mira salte entre jugadores cuyas distancias son casi iguales.
      */
+    /**
+     * Neon-compatible entry point (`KillauraModule` calls this before rotating). The Eclient
+     * engine picks its target inside [update] with the same hysteresis, so this is intentionally
+     * a no-op kept for parity with the uploaded driver instead of a second lock policy.
+     */
+    fun selectTarget(targets: MutableList<EntityTracker.TrackedEntity>, session: RubidiumRelaySession, tick: Long) {
+        if (targets.isEmpty()) return
+        applyTargetLock(targets, tick)
+    }
+
     private fun applyTargetLock(targets: MutableList<EntityTracker.TrackedEntity>, tick: Long) {
         val nearest = targets[0]
         val current = if (lockedId == -1L) null else targets.firstOrNull { it.runtimeId == lockedId }
