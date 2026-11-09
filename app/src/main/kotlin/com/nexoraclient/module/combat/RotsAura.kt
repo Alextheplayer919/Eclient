@@ -145,6 +145,9 @@ class RotsAura : BaseModule(
 
     private val predRot = PredictiveRotator()
     private val hvhGod  = HvHGod()
+    // The uploaded engines are per-instance (state belongs to one aura), not singletons.
+    private val abysm   = AbysmRot()
+    private val lynx    = KillauraRots()
 
     /** Target the Abysm engine last drove, so a target switch re-seeds it (Neon parity). */
     private var abysmTarget: Long? = null
@@ -170,9 +173,9 @@ class RotsAura : BaseModule(
         smoothPitch  = 0f
         predRot.reset()
         hvhGod.reset()
-        AbysmRot.reset()
+        abysm.reset()
         abysmTarget = null
-        KillauraRots.resetState()
+        lynx.resetState()
         lynxHasRot = false
         lynxPitch  = 0f
         lynxYaw    = 0f
@@ -209,10 +212,10 @@ class RotsAura : BaseModule(
                 hvhGod.pick(t.runtimeId, EntityTracker.selfX, EntityTracker.selfZ, packet.tick)
                 if (abysmTarget != t.runtimeId) {
                     abysmTarget = t.runtimeId
-                    AbysmRot.seed(EntityTracker.selfYaw, EntityTracker.selfPitch)
+                    abysm.seed(EntityTracker.selfYaw, EntityTracker.selfPitch)
                 }
                 val m = RotsSupport.motion(t)
-                val (p, y) = AbysmRot.aim(
+                val (p, y) = abysm.aim(
                     t.x, chestY, t.z,
                     m.first, m.second, m.third,
                     EntityTracker.selfX, RotsSupport.localEyeY(), EntityTracker.selfZ,
@@ -229,7 +232,7 @@ class RotsAura : BaseModule(
                 val chestY = RotsSupport.entityFeetY(t) +
                              (if (t.isPlayer) RotsSupport.hitboxHeight(t) * 0.6f else 0.9f)
                 val off = GeoRot.offset(mode.geoName!!, packet.tick)
-                val (p, y) = AbysmRot.aim(
+                val (p, y) = abysm.aim(
                     t.x + off.first, chestY + off.second, t.z + off.third,
                     0f, 0f, 0f,
                     EntityTracker.selfX, RotsSupport.localEyeY(), EntityTracker.selfZ,
@@ -250,7 +253,7 @@ class RotsAura : BaseModule(
 
             targets.isEmpty() -> {
                 if (predRot.isOverriding) predRot.reset()
-                AbysmRot.reset()
+                abysm.reset()
                 lynxHasRot = false
                 return
             }
@@ -349,17 +352,17 @@ class RotsAura : BaseModule(
         }
 
         when (effective) {
-            "Lynx Smooth"  -> KillauraRots.smooth(ctx, snap, env)
-            "Nemesis"      -> KillauraRots.nemesis(ctx, snap, env)
-            "Vortex"       -> KillauraRots.vortex(ctx, snap, env)
-            "FrontStrafe"  -> KillauraRots.frontStrafe(ctx, snap, env, first.runtimeId)
-            "AirHvH Pro"   -> KillauraRots.airHvHPro(ctx, snap, env)
-            "FrontsX"      -> KillauraRots.frontsX(ctx, snap, env)
-            "Astral"       -> KillauraRots.astral(ctx, snap, env)
-            "Atomic"       -> KillauraRots.atomic(ctx, snap, env)
-            "Syntax"       -> KillauraRots.syntax(ctx, snap, env)
-            "Cortex"       -> KillauraRots.cortex(ctx, snap, env)
-            "Alpha"        -> KillauraRots.alpha(ctx, snap, env)
+            "Lynx Smooth"  -> lynx.smooth(ctx, snap, env)
+            "Nemesis"      -> lynx.nemesis(ctx, snap, env)
+            "Vortex"       -> lynx.vortex(ctx, snap, env)
+            "FrontStrafe"  -> lynx.frontStrafe(ctx, snap, env, first.runtimeId)
+            "AirHvH Pro"   -> lynx.airHvHPro(ctx, snap, env)
+            "FrontsX"      -> lynx.frontsX(ctx, snap, env)
+            "Astral"       -> lynx.astral(ctx, snap, env)
+            "Atomic"       -> lynx.atomic(ctx, snap, env)
+            "Syntax"       -> lynx.syntax(ctx, snap, env)
+            "Cortex"       -> lynx.cortex(ctx, snap, env)
+            "Alpha"        -> lynx.alpha(ctx, snap, env)
         }
         lynxPitch = ctx.rotPitch
         lynxYaw = ctx.rotYaw

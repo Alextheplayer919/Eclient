@@ -23,7 +23,7 @@ import kotlin.math.sqrt
  *  - Target.vel* = delta de posicion por paquete; Target.yaw = rotationYaw de la entidad.
  *  - Env.key* = banderas tactiles del ultimo PlayerAuthInputPacket.
  */
-object KillauraRots {
+class KillauraRots {
 
     // ---- ctx (the original's stack ctx + this+0x218/0x21C outputs) ----
     class Ctx(
@@ -496,8 +496,8 @@ object KillauraRots {
 
     // ===================== AirHvHPro (Rots3) =====================
     // file-statics del original: ring de posiciones + deque de yaws (max 10)
-    private const val HIST_CAP = 16
-    private const val HIST_MAX = 10
+    private val HIST_CAP = 16
+    private val HIST_MAX = 10
     private val histPos = Array(HIST_CAP) { FloatArray(3) }
     private val histYaw = FloatArray(HIST_CAP)
     private var histOff = 0

@@ -19,7 +19,7 @@ import kotlin.math.sign
  *
  * Usa solo datos que el servidor ya manda. Es deterministico salvo el ruido opcional [humanize].
  */
-object AbysmRot {
+class AbysmRot {
 
     /** Grados maximos por tick antes de multiplicar por el estilo. */
     @Volatile var maxSpeed = 35f
@@ -114,5 +114,5 @@ object AbysmRot {
         return r - 180f
     }
 
-    private const val RAD2DEG = 57.29577951308232
+    private val RAD2DEG = 57.29577951308232
 }
