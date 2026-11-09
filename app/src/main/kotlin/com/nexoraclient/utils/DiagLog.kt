@@ -13,7 +13,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
 
-// DiagLog: CrystalAura/AnchorAura/WorldBlockTracker gibi modüllerin "verbose"
+// DiagLog: WorldBlockTracker gibi modüllerin "verbose"
 // tanı loglarını artık oyun içi chat'e (TextPacket) basmak yerine buraya
 // yönlendiriyoruz. Chat'e basmak hem gereksiz spam yaratıyordu (her tick
 // tekrar eden "Kendi etrafım: 0 zemin" gibi satırlar gerçek sunucu

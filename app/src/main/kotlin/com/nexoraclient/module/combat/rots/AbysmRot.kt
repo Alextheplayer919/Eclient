@@ -37,6 +37,11 @@ object AbysmRot {
         pitch = 0f
     }
 
+    fun seed(currentYaw: Float, currentPitch: Float) {
+        yaw = wrap180(currentYaw)
+        pitch = currentPitch.coerceIn(-90f, 90f)
+    }
+
     /**
      * Devuelve (pitch, yaw) para este tick.
      * (tx,ty,tz) = punto a apuntar del enemigo (ya con altura de pecho);

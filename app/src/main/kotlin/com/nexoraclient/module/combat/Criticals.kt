@@ -23,29 +23,11 @@ class Criticals : BaseModule(
     }
 
     companion object {
-        // FIX: KillAura/KillAuraPro'nun kendi crit modlarıyla (InputFlag/
-        // MovePacket/alwaysCrit) AYNI kilit anahtarını paylaşıyor. Eskiden
-        // Criticals kendi ayrı global AtomicBoolean'ını kullanıyordu —
-        // KillAuraPro ise "crit-injection" adlı ayrı bir keyed Mutex
-        // kullanıyordu. İkisi birbirinden habersiz olduğu için aynı anda
-        // açıklarsa çakışan Y-pozisyon sahteciliği (rubber-band riski +
-        // bazı vuruşlarda crit'in sessizce kaybolması) oluşabiliyordu.
-        // Artık ikisi de aynı anahtarı kullanıyor, tek modül her seferinde
-        // kilidi alabiliyor.
+        // FIX: "crit-injection" keyed mutex — Criticals is now the only
+        // consumer, but the key is kept so a future crit-emitting module
+        // can share the same lock instead of silently double-writing Y.
         private const val CRIT_LOCK_KEY = "crit-injection"
-
-        // FIX: TPAura aynı anda çalışıyorsa ve az önce (bu pencerede) kendi
-        // ham MovePlayerPacket'ini gönderdiyse, Criticals'ın da üstüne
-        // sahte Y-hareketi bindirmesi iki modülün pozisyonu farklı bazlardan
-        // değiştirmesine yol açıyor — sunucu bunu çelişkili hareket olarak
-        // görüp rubber-band (lagback) tetikliyordu. Bu pencerede hareket
-        // tabanlı crit'i atlayıp orijinal saldırı paketini olduğu gibi
-        // gönderiyoruz.
-        private const val TPAURA_CONFLICT_WINDOW_MS = 120L
     }
-
-    private fun tpAuraRecentlyMovedSelf(): Boolean =
-        System.currentTimeMillis() - TPAura.lastPositionOverrideMs < TPAURA_CONFLICT_WINDOW_MS
 
     private val mode     = enum ("Mode",      CritMode.Fast)
     private val cooldown = int  ("Cooldown",  0, 0, 100)
@@ -67,12 +49,6 @@ class Criticals : BaseModule(
         if (now - lastCritMs < cooldown.value) return
 
         val session = PacketEventBus.currentSession ?: return
-
-        if (tpAuraRecentlyMovedSelf()) {
-            // TPAura az önce pozisyonu değiştirdi, hareket tabanlı crit'i
-            // atlayıp saldırıyı olduğu gibi geçiriyoruz.
-            return
-        }
 
         event.cancel()
 

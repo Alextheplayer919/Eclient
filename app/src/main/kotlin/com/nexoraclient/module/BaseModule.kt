@@ -97,7 +97,7 @@ abstract class BaseModule(
      * forcing a rotation cancels the eat. Everything else is untouched.
      *
      * Overridable per module — defensive modules that must keep running during
-     * an eat (AutoTotem, AutoArmor, AntiCrystal) should set this to false:
+     * an eat (AutoTotem) should set this to false:
      *
      *     override val pauseWhileEating: Boolean get() = false
      */

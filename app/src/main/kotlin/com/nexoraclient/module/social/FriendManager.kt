@@ -55,7 +55,8 @@ object FriendManager {
  * Combat modules use this extension to check if a target is a friend.
  * Delegates to FriendLibrary (the authoritative global list).
  *
- * Usage in KillAura, TPAura, etc:
+ * Note: the shipped combat modules (AutoTotem/Criticals/Hitbox) do not
+ * target entities, so nothing calls this yet. Intended usage:
  *   .filterNot { it.isFriendEntity }
  */
 val EntityTracker.TrackedEntity.isFriendEntity: Boolean

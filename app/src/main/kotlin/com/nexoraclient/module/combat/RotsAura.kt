@@ -145,6 +145,9 @@ class RotsAura : BaseModule(
 
     private val predRot = PredictiveRotator()
     private val hvhGod  = HvHGod()
+
+    /** Target the Abysm engine last drove, so a target switch re-seeds it (Neon parity). */
+    private var abysmTarget: Long? = null
     private var lynxHasRot = false
     private var lynxPitch  = 0f
     private var lynxYaw    = 0f
@@ -168,6 +171,7 @@ class RotsAura : BaseModule(
         predRot.reset()
         hvhGod.reset()
         AbysmRot.reset()
+        abysmTarget = null
         KillauraRots.resetState()
         lynxHasRot = false
         lynxPitch  = 0f
@@ -203,6 +207,10 @@ class RotsAura : BaseModule(
                 val chestY = RotsSupport.entityFeetY(t) +
                              (if (t.isPlayer) RotsSupport.hitboxHeight(t) * 0.6f else 0.9f)
                 hvhGod.pick(t.runtimeId, EntityTracker.selfX, EntityTracker.selfZ, packet.tick)
+                if (abysmTarget != t.runtimeId) {
+                    abysmTarget = t.runtimeId
+                    AbysmRot.seed(EntityTracker.selfYaw, EntityTracker.selfPitch)
+                }
                 val m = RotsSupport.motion(t)
                 val (p, y) = AbysmRot.aim(
                     t.x, chestY, t.z,

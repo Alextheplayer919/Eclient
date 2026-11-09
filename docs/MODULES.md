@@ -13,27 +13,23 @@ names. Only things actually used in the code are documented. Companion docs:
 `PROTOCOL.md` (Cloudburst usage inventory), `CORE-ARCHITECTURE.md` (relay +
 trackers + event bus), `README.md` (index).
 
-Registry: `module/ModuleManager.kt` auto-registers **76 module classes /
-77 runtime instances** (ComboShortcut twice) on first access. Three files
-exist but are NOT registered (dead/experimental): `combat/PistonAura.kt`,
-`misc/ShulkerDupe.kt`, `visual/ShulkerPreview.kt`; `social/FriendManager.kt`
-is a plain helper, not a module.
+Registry: `module/ModuleManager.kt` auto-registers **54 module classes /
+55 runtime instances** (ComboShortcut twice) on first access. Two files
+exist but are NOT registered (dead/experimental): `misc/ShulkerDupe.kt`,
+`visual/ShulkerPreview.kt`; `social/FriendManager.kt` is a plain helper, not
+a module.
 
 Name drift (filename vs registered class) to keep greps sane:
-- `combat/KillAuraPro.kt` → class **AuraV3** ("2b2tpe-style aura port")
-- `combat/SRCFight.kt` → class **SCRFighter**
 - `misc/Disconnect.kt` → class **AutoDisconnect**
 - `misc/AutoBaseFinder.kt` → module **AutoStashHunter**
 - `misc/AutoMine.kt` → module **AutoMining**
-- `combat/HitAndRunModule.kt` → **HitAndRunPro**
-- `combat/HotbarSwitcherModule.kt` → **Switcher**
 - `movement/FreeCam.kt` → **FreeCamera**
 
 ---
 
 ## 0. The module framework (`module/BaseModule.kt`, `ModuleManager.kt`)
 
-- **Identity**: constructor `name`, `category` (`ModuleCategory.COMBAT|MOVEMENT|VISUAL|PLAYER|WORLD|MISC`), `description`. Category decides the UI section; it is independent from the source directory (e.g. `combat/AntiCrystal.kt` declares PLAYER).
+- **Identity**: constructor `name`, `category` (`ModuleCategory.COMBAT|MOVEMENT|VISUAL|PLAYER|WORLD|MISC`), `description`. Category decides the UI section; it is independent from the source directory (e.g. `combat/AntiPiston.kt` declares MOVEMENT).
 - **Settings DSL** (registered in constructor, editable in the module menu):
   - `bool("label", default)`
   - `int("label", default, min, max)`
@@ -49,142 +45,23 @@ Name drift (filename vs registered class) to keep greps sane:
 
 ---
 
-# COMBAT (25)
+# COMBAT (3)
 
-### KillAura — `module/combat/KillAura.kt` (732 lines, biggest combat module)
-Melody-style kill aura: aim/random rotations, real target-lock strafe ("Quantum" target motion prediction), silent weapon switch, multi-target pools.
-- **Settings**: Attack Mode (enum `AttackMode.CPS`), CPS (int 20, 1–100), Interval (1, 0–20), Packets (2, 1–10), Hit Attempts (1, 1–5), Packet Attack (bool false), Hit Chance (100, 0–100), Players Only (true), Mobs Only (false), Range (50f, 2–50), Wall Range (3f, 0–10), Target Mode (enum `TargetMode.MULTI`), Switch Delay (100, 20–…).
-- **Reads**: `MobEquipmentPacket`, `MovePlayerPacket`, `PlayerAuthInputPacket`.
-- **Key functions**: `selectTargets`, `isTarget`, `bestWeaponSlot` (silent switch candidate), prediction family — `predictWithQuantum`, `predictDynamic`, `predictAdvancedVelocity`, `predictPatternBased`, `predictNeural` (five interchangeable target-motion models); `calculateRotationKillAura3`, `applyRandomRotation` / `applySoftLock` / `applyTargetLock` (rotation styles), `wrapYaw`.
-- Deep doc: `MELODY_MODULES.md`.
-
-### RotsAura — `module/combat/RotsAura.kt` (~490 lines, + `module/combat/rots/`, ~1800 lines)
-KillAura port of KiwiMods' `KillauraModule` with the six Lynx/Kiwi rotation engines, added verbatim
-and bridged to `EntityTracker` through `rots/RotsSupport.kt`. 30 selectable `Rot Mode` values
-(Abysm, 4 Geo shapes, Predictive, 12 Kiwi, 11 Lynx handlers, HvHGod).
-- **Settings**: Range (6f, 1–20), CPS (20, 5–30), Packets (1, 1–10), Players Only (true), Anti Bot (true), Ignore Friends (true), Rot Mode (enum `RotMode.ABYSM`), Randomize (false), Smooth Speed (15f, 1–45), Strafe Amp (8f, 0–30), Vertical Offset (0.3f, −1..1), Silent Rotation (true), Pred Time (2f, 0–8), Pred Strength (1f, 0–1.5), Rot Smoothing (0.35f, 0.05–1), Rot Max Speed (30f, 5–90), Rot Accel (12f, 2–60), Camera Sync (true), Shortcut (false).
-- **Reads**: `PlayerAuthInputPacket` (rotation/position/inputData/tick/delta). **Sends** (Predictive + Camera Sync): `MovePlayerPacket` via `session.clientBound`; attacks via `PacketUtil.sendSwingAndAttack`.
-- **Key functions**: `onPacket` (mode dispatch), `searchForTargets` / `isTarget` / `isBot`, `computeLynxRotation` (builds `KillauraRots.Ctx/Target/Env`), `applyKiwiRotation`, `predictiveSettings`, `applyRotation`.
-- **Engines** (`rots/`): `KillauraRots` (12 handlers, static state cleared by `resetState()`), `PredictiveAim` (stateful) + `PredictiveRotator` (target-lock hysteresis + camera sync), `AbysmRot`, `GeoRot`, `HvHGod` (enemy-style classifier with `PROFILE` table), `RotsSupport` (feet/eye frames, hitbox, per-tick motion, input flags).
-- Deep doc: `ROTS_ENGINES.md`.
-
-### AuraV3 — `module/combat/KillAuraPro.kt` (326 lines)
-2b2tpe-style aura port: keep-distance ring control, long range.
-- **Settings**: Range (32f, 1–32), Boost Amount (10f, 1–10), Boost Delay (0.1f, 0.1–60), Rotation Speed (30f, 0–30), Strafe Speed (30f, 1–30), Keep Distance (4f, 1–10), Keep Distance Tolerance/Speed/Y Offset.
-- **Reads**: `PlayerAuthInputPacket`.
-- **Key functions**: `applyKeepDistance`, `stepToward`, `selectTargets`, `smoothYaw/smoothPitch`, crit injectors `injectCritFastUp` / `injectCritUltraFastUp`.
-
-### LegitAura — `module/combat/LegitAura.kt` (175 lines)
-Looks "legit": human reaction time, smoothed turns, aim jitter.
-- **Settings**: Range (4.5f, 1–6), Turn Smooth (0.18f, 0.02–1), Aim Jitter (1f, 0–8).
-- **Reads**: `PlayerAuthInputPacket`. **Key functions**: `findTarget`, `applyLegitRotation`, `rollNextDelay`, `attack`.
-
-### TPAura — `module/movement/TPAura.kt` (MOVEMENT category, combat purpose; 386 lines)
-Circles the opponent server-side.
-- **Settings**: Range (1.52f), Horizontal/Vertical/Strafe Speed, Y Offset (0.8f).
-- **Reads**: `MovePlayerPacket`, `PlayerAuthInputPacket`. **Creates**: `UpdateAbilitiesPacket`.
-- **Key functions**: `moveAroundTarget`, `calculatePosition`, `enablePhase/disablePhase`, `notifyExternalPositionOverride` (hook so other teleports don't fight it).
-
-### SCRFighter — `module/combat/SRCFight.kt` (301 lines)
-High/low strafe loop + timer; accelerates at low HP.
-- **Settings**: Horizontal/Vertical/Strafe Speed, Range (2.4f), High/Low Offset, Drop Speed, LowHealth Offset + Threshold (8f).
-- **Reads**: `PlayerAuthInputPacket`. **Key functions**: `resetCycle`, `findTarget`, `moveAndRotate`, `stepTowardTarget`.
-
-### HitAndRunPro — `module/combat/HitAndRunModule.kt` (124 lines)
-Hits, then instantly circles away.
-- **Settings**: Range (4f), Jump Height (0.42f), Circle Radius (1.5f), Shortcut.
-- **Reads**: `PlayerAuthInputPacket`. **Creates**: `SetEntityMotionPacket`. **Key function**: `executeCombo`.
-
-### TriggerBot — `module/combat/TriggerBotModule.kt` (140 lines)
-Attacks only when the crosshair is actually on a target (safe with other auras off).
-- **Settings**: Range (4f), Aim Tolerance (4f), Shortcut.
-- **Key functions**: `findLookedAtTarget`, `angleToLookVector`, `hasLos`.
+### Criticals — `module/combat/Criticals.kt` (136 lines)
+Forces every hit to crit by injecting the micro-position packets vanilla jump-crits imply. ULTRA-FAST variant in code.
+- **Reads**: `InventoryTransactionPacket`, `MovePlayerPacket`, `MovePacket`.
+- **Key functions**: `injectFast`, `injectUltraFast`, `injectVanilla`, `injectPacket`.
 
 ### Hitbox — `module/combat/HitboxModule.kt` (144 lines)
 Enlarges targets' hitboxes only in the local entity data stream (manual hits land easier).
 - **Settings**: Width/Height (1.5f, 0.5–12), Range (12f), Shortcut.
 - **Creates**: rewritten `SetEntityDataPacket` toward client. **Key functions**: `applyToTargets`, `sendHitbox`, `resetAll` (restore on disable).
 
-### AutoHVH — `module/combat/AutoHvHModule.kt` (218 lines)
-Approaches from long range, fights at close range with CPS pacing.
-- **Settings**: Max Range (128f, up to 500), Engage Range (3.2f), Approach Speed, Strafe Radius/Speed, Y Offset, Jitter (0.05f).
-- **Creates**: `MovePlayerPacket`. **Key functions**: `tick`, `stepToward`, `strafeAround`.
-
-### InfiniteAura — `module/combat/InfiniteAuraModule.kt` (179 lines)
-Teleports directly behind the target every tick, then attacks (very wide practical range).
-- **Settings**: Max Range (256f), Behind Offset (2f), Lagback Threshold (50f), Shortcut.
-- **Key functions**: `calculateRotationToTarget`, `findTarget`.
-
-### ACA (anti-camper aura) — `module/combat/ACAModule.kt` (158 lines)
-Short-range teleport-to-target + CPS-paced attacks. Playbook doc: `ANTI_CAMPER_PLAYBOOK.md`.
-- **Settings**: Range (7f), Y Offset, Keep Distance (2f), Shortcut.
-- **Creates**: `MovePlayerPacket`. **Key functions**: `teleportBehind`, `findTarget`.
-
-### Switcher — `module/combat/HotbarSwitcherModule.kt` (123 lines)
-Silently walks the server-side hotbar through configured slots.
-- **Settings**: StartSlot/EndSlot (0–8), SwitchDelay (100 ms), Loop, Reverse, Shortcut.
-- **Reads**: `MobEquipmentPacket`, `PlayerHotbarPacket`, `InterceptablePacket`. **Key functions**: `advanceSlot`, `switchToSlot`.
-
-### Criticals — `module/combat/Criticals.kt` (136 lines)
-Forces every hit to crit by injecting the micro-position packets vanilla jump-crits imply. ULTRA-FAST variant in code.
-- **Reads**: `InventoryTransactionPacket`, `MovePlayerPacket`, `MovePacket`.
-- **Key functions**: `injectFast`, `injectUltraFast`, `injectVanilla`, `injectPacket`; shares `tpAuraRecentlyMovedSelf` with TPAura.
-
-### CrystalAura — `module/combat/CrystalAura.kt`
-Places and breaks end crystals using explosion-damage scoring, with server-confirmed base placement and crystal-spawn checks.
-- **Settings**: Range, Auto Obsidian, Foot Priority, Silent Rotation, Min Place Damage, Max Self Damage, Min Break Damage.
-- **Placement flow**: Prefer a usable obsidian/bedrock block at the target's feet, otherwise place obsidian on a server-known supported cell and wait for the server block update before simulating damage or placing a crystal. Auto-base placement retries after an unconfirmed/rejected request instead of permanently latching the target cell; the planner checks target/self feet levels and a two-block horizontal search ring.
-- **Rotation/validation**: Silent aim modifies outbound movement rotation only for both placement and crystal attacks; target runtime id/position, crystal id/damage, base block, and two-block clearance are rechecked against server-tracked state immediately before use. Crystal damage gates can still intentionally suppress crystal use even when a base is available.
-- **Protocol notes**: See [`CRYSTAL_AURA.md`](CRYSTAL_AURA.md) for the Bedrock `ITEM_USE`/`CLICK_BLOCK` wire fields, acknowledgement flow, and research sources.
-- **Reads**: `AddEntityPacket` (crystal spawn confirmation), `LevelEventPacket`, outbound movement packets (silent rotation), and `WorldBlockTracker` server block updates.
-- **Key functions**: `pickTarget`, `advancePendingObsidian`, `tryExplodeBest`, `tryPlace`, `findAdjacentFootBase`, `findObsidianSpot`, `fireIdPredictions`, `buildBestBase`/`searchPlaceBase`, `simulateExplosionDamage`/`exposureTo`/`isRayBlocked`, `attackCrystal`, `pruneBlacklist`, `checkTimedOutPlacements`.
-
-### AntiCrystal — `module/combat/AntiCrystal.kt` (PLAYER category, 31 lines)
-Reports a slightly lowered position to reduce crystal explosion damage taken.
-- **Settings**: Y Level (0.4f, 0.1–1.61). **Reads**: `PlayerAuthInputPacket`.
-
-### AnchorAura — `module/combat/AnchorAura.kt` (406 lines)
-Rapid respawn-anchor bomber: place anchor → glowstone-click (charge/boom) → repeat; full verify + logging paths.
-- **Settings**: Skip Friends, No Switch, Force, Shortcut, Log.
-- **Reads**: `MobEquipmentPacket`. **Key functions**: `nearestEnemy`, `findPlacementSpot`, `attemptPlace` (→ `PlacementUtil.prepareItemForUse` + `sendPlacementUseRaw`), `verifyPlacement`, `charge`, `detonate`, `logFail`.
-
-### BedAura — `module/combat/BedAura.kt` (118 lines)
-Places a bed next to target and detonates (Nether/End gated).
-- **Settings**: Target Range (8, 2–16), Friend Skip, Place Range, Bed item id (string `minecraft:red_bed`), No Switch, Cooldown ms (1500), Require Nether/End (true).
-- **Tick loop**: `TICK_MS`. **Key functions**: `tick`, `nearestEnemy`, `attemptPlace`.
-
-### AntiBed — `module/combat/AntiBed.kt` (75 lines)
-Cancels bed-explosion feedback locally.
-- **Settings**: Cancel Particles / Camera Shake / Motion, Protection Window ms (400).
-- **Reads**: `CameraShakePacket`, `LevelEventPacket`, `LevelSoundEventPacket`, `MoveEntityAbsolutePacket`, `SetEntityMotionPacket`.
-
-### AutoTrap — `module/combat/AutoTrapModule.kt` (196 lines)
-Boxes the opponent in obsidian (engine akin to SelfTrap's ring builder).
-- **Settings**: Range (6f, 2–12). **Key functions**: `openingDirection`, `buildQueue`, `findTarget`.
-
-### SelfTrap — `module/combat/SelfTrapModule.kt` (89 lines)
-Surrounds yourself with obsidian to cut incoming crystal damage.
-- **Key function**: `rebuildQueue`. **Reads**: `PlayerAuthInputPacket`.
-
-### CTrap — `module/combat/CTrapModule.kt` (182 lines)
-Four-corner obsidian → crystals on corners → detonate. Two phase state machine.
-- **Settings**: Range (6f). **Reads**: `AddEntityPacket`, `PlayerAuthInputPacket`.
-- **Key functions**: `handleObsidianPhase`, `handleCrystalPhase`, `rebuildObsidianQueue`.
-
-### ObsidianMiner — `module/combat/ObsidianMinerModule.kt` (171 lines)
-Auto-mines obsidian around the opponent with the best hotbar pickaxe.
-- **Settings**: Range (6f). **Creates**: `PlayerActionPacket` (START/ABORT break flow).
-- **Key functions**: `findPickaxeSlot`, `switchToPickaxe`, `restoreSlot`, `sendBreak` (+ `cancelBreak` analogue in AutoMine).
-
 ### AutoTotem — `module/combat/AutoTotem.kt` (PLAYER category, 242 lines)
 Keeps a totem equipped in offhand at all times.
 - **Tick loop**: `SAFETY_TICK_MS`.
 - **Reads**: `EntityEventPacket`, `InventoryContentPacket`, `InventorySlotPacket`.
 - **Key functions**: `refreshFromSnapshot`, `tickCheck`, `equipTotem` (→ `InventoryUtil.sendOffhandEquip`).
-
-### AutoArmor — `module/combat/AutoArmor.kt` (PLAYER category, 79 lines)
-Auto-equips the best armor pieces.
-- **Tick loop**: 300 ms. **Key function**: `checkAndEquipBestArmor`.
 
 ---
 

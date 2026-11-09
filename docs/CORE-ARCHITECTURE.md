@@ -29,7 +29,7 @@ inventory), `README.md` (index).
 
 ## 2. Event system (`events/`)
 
-- `PacketEvent(packet, direction, session)`; `Direction.CLIENT_TO_SERVER` = traffic the local game emits, `SERVER_TO_CLIENT` = server traffic. **`cancel()` drops the packet (it never crosses the relay)**; **`cancelAndReplace(pkt)` swaps it** — this is how Hitbox, ArmorHide, AntiBlind, AntiBed, WeatherController, FreeCam, FreeLook, AutoSprint etc. implement their effects without ever building packets on the *sending* side.
+- `PacketEvent(packet, direction, session)`; `Direction.CLIENT_TO_SERVER` = traffic the local game emits, `SERVER_TO_CLIENT` = server traffic. **`cancel()` drops the packet (it never crosses the relay)**; **`cancelAndReplace(pkt)` swaps it** — this is how Hitbox, ArmorHide, AntiBlind, AntiPiston, WeatherController, FreeCam, FreeLook, AutoSprint etc. implement their effects without ever building packets on the *sending* side.
 - `PacketEventBus.publish(event)` walks a volatile listener snapshot (`post` = alias); `currentSession` mirrors the active relay session (`WorldBlockTracker.resolveIdentifier` and others read it). BaseModule registers itself on enable, unregisters on disable — so module `onPacket` code runs only while enabled.
 - Threading: events publish on **netty worker threads**; module tick loops run on a coroutine dispatcher. That is why shared state in trackers uses `@Volatile`/`ConcurrentHashMap`, and why module code tolerates races with plain volatile counters. **Don't add locks casually across these two worlds — publish side must never block.**
 
@@ -56,10 +56,10 @@ Correction accounting for flight modules: `noteCorrection(x,y,z)`, `noteServerTe
 
 ## 4. The god-utils modules funnel through
 
-- **`utils/PlacementUtil.kt`** — the placement pipeline shared by CrystalAura, AnchorAura, BedAura, AutoTrap, SelfTrap, CTrap, Scaffold and **AutoBuilder**: `blockDefCache`, `findItemInInventory`, `prepareItemForUse` (hotbar find → hotbar select → inventory move via ItemStackRequest), `sendPlacementUseRaw` (the ITEM_USE CLICK_BLOCK transaction + mandatory consumption action record), `sendInteract`, `getBlockDefinition` (scan caches, `BLOCK_DEF_SCAN_CAP`/`MISS_LIMIT`), `posKey`, `findClickableNeighbor`, `revert`.
+- **`utils/PlacementUtil.kt`** — the placement pipeline shared by Scaffold, AutoTorch and Schematica's **AutoBuilder**: `blockDefCache`, `findItemInInventory`, `prepareItemForUse` (hotbar find → hotbar select → inventory move via ItemStackRequest), `sendPlacementUseRaw` (the ITEM_USE CLICK_BLOCK transaction + mandatory consumption action record), `sendInteract`, `getBlockDefinition` (scan caches, `BLOCK_DEF_SCAN_CAP`/`MISS_LIMIT`), `posKey`, `findClickableNeighbor`, `revert`.
 - **`utils/InventoryUtil.kt`** — slot math (hotbar 0–8, inventory 9–35, offhand 119), `sendHotbarSelect` (the "never AIR in MobEquipment" fix lives here), `sendOffhandEquip`, `isTotem`, `resolveIdentifier`, ItemStackRequest move builders (`TakeAction`/`PlaceAction`/`SwapAction`/`DropAction`), `ItemData` builder for offhand equips.
 - **`utils/PacketUtil.kt`** — `MovePlayerPacket`/`AnimatePacket` constructors (modes NORMAL/TELEPORT), swing packets; used by Criticals + Timer.
-- **`utils/MiningUtil.kt`** — break-speed/state helpers for ObsidianMiner + AutoMine; **`utils/CritLock.kt`** — crit-window bookkeeping for Criticals (shared with KillAura-style PePvP via `TimerPvP.kt`).
+- **`utils/MiningUtil.kt`** — break-speed/state helpers for AutoMine; **`utils/CritLock.kt`** — crit-window bookkeeping for Criticals.
 - **`utils/RubberbandGuard.kt`** — generic anti-rubberband helper (complements MovementCompliance).
 - **`utils/RotationUtil.kt`, `MathUtil.kt`, `GameFov.kt`** — geometry/FOV math for ESP/Xray/TargetESP/ChunkFinder.
 - **`utils/OreTracker.kt`** — ore index feeding Xray + AutoMining; **`utils/BlockTracker.kt`** — small per-module block index (separate from WorldBlockTracker; don't merge).

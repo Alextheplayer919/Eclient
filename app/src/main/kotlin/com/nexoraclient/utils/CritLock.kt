@@ -12,8 +12,8 @@ object CritLock {
     // AtomicBoolean daha hafif
     private val locked = AtomicBoolean(false)
 
-    // FIX: düz mutableMapOf thread-safe DEĞİLDİ. KillAura + KillAuraPro aynı
-    // anda (her ikisi de scope.launch ile) her attack'ta bu map'e concurrent
+    // FIX: düz mutableMapOf thread-safe DEĞİLDİ. Birden fazla çağıran aynı
+    // anda (her biri scope.launch ile) her attack'ta bu map'e concurrent
     // getOrPut çağırıyordu. Thread-safe olmayan bir HashMap'e eşzamanlı yazmak
     // internal node zincirini bozabilir; sonuç olarak bazı tick'lerde kilit
     // ya hiç oluşmuyor ya da yanlış davranıyor ve crit enjeksiyonu sessizce
@@ -27,8 +27,8 @@ object CritLock {
         moduleLocks[key]?.let { if (it.isLocked) it.unlock() }
     }
 
-    // FIX: tryAcquire() anlık tryLock() — meşgulse hemen vazgeçiyor. KillAura
-    // (MovePacket modu) ile Criticals aynı anahtarı paylaştığı için, birinin
+    // FIX: tryAcquire() anlık tryLock() — meşgulse hemen vazgeçiyor. Aynı
+    // anahtarı paylaşan iki crit yolu olduğunda, birinin
     // 5-25ms süren enjeksiyon penceresine diğerinin saldırı paketi denk
     // gelirse crit sessizce kayboluyordu (paket crit'siz gidiyordu). Bu
     // fonksiyon aynı işi yapıyor ama kilit meşgulse kısa bir süre (timeoutMs)

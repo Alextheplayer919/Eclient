@@ -8,7 +8,7 @@ or protocol usage change.
 
 | Doc | Covers |
 |---|---|
-| **MODULES.md** | All 78 registered module instances: purpose, settings (defaults+ranges), packets read/created/sent, key functions. Includes the framework contract (`BaseModule`/`ModuleManager`), filename↔class-name drift table, and the unregistered-but-present files. |
+| **MODULES.md** | All 55 registered module instances: purpose, settings (defaults+ranges), packets read/created/sent, key functions. Includes the framework contract (`BaseModule`/`ModuleManager`), filename↔class-name drift table, and the unregistered-but-present files. |
 | **PROTOCOL.md** | Every CloudburstMC class used in the tree → consumer files, blast-radius ranking, the 15 invariants the code physically relies on, version-gate watchpoints. Start here when a protocol/codec/NBT dependency update breaks or changes behaviour. |
 | **CORE-ARCHITECTURE.md** | Relay topology (`RubidiumRelay`/`RubidiumRelaySession`, `serverBound`/`clientBound`), the `PacketEventBus` (cancel/replace semantics + threading), trackers (`EntityTracker` incl. the eye/feet Y-frame flag, `WorldBlockTracker`, `CollisionGuard`, `MovementCompliance`), god-utils (`PlacementUtil`, `InventoryUtil`, …), and one-liners for auth/config/session/ui. |
 
@@ -23,10 +23,6 @@ or protocol usage change.
 | FRIENDS.md | Global friend/enemy lists + the sendToServer friend-attack choke (no module can bypass) + /w notifications |
 | AUTOSIGN.md | AutoSign: sign wire flow (OpenSign + BlockEntityDataPacket) and the empty-lines-only rewrite |
 | AUTOTORCH.md | AutoTorch: researched Bedrock spawn rules, no-light-on-the-wire finding, client-side light flood |
-| MELODY_MODULES.md | KillAura and the Melody combat module family |
-| ROTS_ENGINES.md | RotsAura + the Kiwi/Lynx rotation engines (`module/combat/rots/`): engine contract, client bridge, mode table |
-| CRYSTAL_AURA.md | CrystalAura's Bedrock placement packet contract, server-ack flow, retry fix, and research sources |
-| ANTI_CAMPER_PLAYBOOK.md | ACA / anti-camper playbooks |
 
 ## Update rules (so docs never drift)
 

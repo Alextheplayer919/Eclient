@@ -19,7 +19,7 @@ Companion: `MODULES.md` (per-module function detail), `CORE-ARCHITECTURE.md`.
 1. In the diff of the new artifact (or its release notes), find renamed/removed classes and field-setter changes. Cloudburst packets are Lombok `@Data` (setters!), so renames surface as **compile errors**, which is good; semantic changes (enum order, frame semantics, serializer version gates) are silent — those are the dangerous ones, and they have an "Invariant" entry below.
 2. For each hit, open the consumer list in §2 and the invariants in §3.
 3. Re-verify on a live server with **FlightProbe** (movement/auth traffic) and **PacketCollector** (per-class dumps) — both modules exist for exactly this job; see `MODULES.md#MISC`.
-4. Smoke path: NoLagback stable under `CorrectPlayerMovePredictionPacket` → CrystalAura places/breaks → Schematica Auto Build places 5+ blocks → fly modules engage abilities.
+4. Smoke path: NoLagback stable under `CorrectPlayerMovePredictionPacket` → Schematica Auto Build places 5+ blocks → fly modules engage abilities.
 
 ---
 
@@ -49,31 +49,31 @@ Companion: `MODULES.md` (per-module function detail), `CORE-ARCHITECTURE.md`.
 
 ### Motion / input
 - `PlayerAuthInputPacket`, `PlayerAuthInputData` — 34/16 files: nearly all combat + movement modules read it; `EntityTracker` derives self position/rotation frames from it; NoLagback reconciles against `CorrectPlayerMovePredictionPacket` (FlightProbe also logs `ClientMovementPredictionSyncPacket`).
-- `MovePlayerPacket` — modes **NORMAL / TELEPORT** (see `PacketUtil.kt` constructors); consumers: ACA, AutoHVH, FreeCam, NoFallDamage, NoLagback, TPAura, KillAura, FlightProbe…
-- `MoveEntityAbsolutePacket` / `MoveEntityDeltaPacket` — AntiBed, AntiPiston, AirJump, PacketCollector.
+- `MovePlayerPacket` — modes **NORMAL / TELEPORT** (see `PacketUtil.kt` constructors); consumers: FreeCam, NoFallDamage, NoLagback, Criticals, FlightProbe…
+- `MoveEntityAbsolutePacket` / `MoveEntityDeltaPacket` — AntiPiston, AirJump, PacketCollector.
 - `SetEntityMotionPacket` — the velocity-write primitive for fly/jetpack/anti-bed/anti-piston/etc. (18 files). Also spoofed client-bound by FlightProbe.
 
 ### Inventory / placement (foundations of the auras + Auto Build)
-- `InventoryTransactionPacket`, `InventoryTransactionType`, `ItemUseTransaction`, `InventoryActionData`, `InventorySource`, `ContainerId`, `ContainerSlotType`, `FullContainerName` — `utils/InventoryUtil.kt`, `utils/PlacementUtil.kt`, `utils/PacketUtil.kt`, and readers: Criticals, Timer, ElytraFly, ArmorHide, AutoArmor, AutoTotem, ShulkerDupe.
+- `InventoryTransactionPacket`, `InventoryTransactionType`, `ItemUseTransaction`, `InventoryActionData`, `InventorySource`, `ContainerId`, `ContainerSlotType`, `FullContainerName` — `utils/InventoryUtil.kt`, `utils/PlacementUtil.kt`, `utils/PacketUtil.kt`, and readers: Criticals, Timer, ElytraFly, ArmorHide, AutoTotem, ShulkerDupe.
 - `MobEquipmentPacket` — **constructed only inside `InventoryUtil.sendHotbarSelect/sendEquip`**; every placement module goes through that (incl. AutoBuilder via PlacementUtil).
 - `ItemStackRequest(Packet)`, `ItemStackRequestAction` (`TakeAction`/`PlaceAction`/`SwapAction`/`DropAction`), `ItemStackRequestSlotData`, `ItemStackResponsePacket`, `ItemStackResponseStatus` — `InventoryUtil.kt` (move-from-inventory restock path) + ShulkerDupe/ShulkerPreview (unregistered).
 - `InventoryContentPacket`, `InventorySlotPacket` (+ their v729 serializers) — inventory model: EntityTracker snapshot, ElytraFly durability, ArmorHide, AutoTotem.
-- `ItemData`, `ItemDefinition` — full-stack model; `ItemData.AIR` and the `ItemData.Builder` shape are hard dependencies (EntityTracker, GamingPacketListener, AutoArmor/AutoTotem/CTrap, PlacementUtil, InventoryUtil).
+- `ItemData`, `ItemDefinition` — full-stack model; `ItemData.AIR` and the `ItemData.Builder` shape are hard dependencies (EntityTracker, GamingPacketListener, AutoTotem, PlacementUtil, InventoryUtil).
 
 ### Blocks / world
 - `LevelChunkPacket`, `SubChunkPacket`, `UpdateBlockPacket`, `UpdateSubChunkBlocksPacket`, `ChangeDimensionPacket`, `ClientCacheStatusPacket` — `utils/WorldBlockTracker.kt` + `utils/ChunkParser.kt` + `utils/BlockTracker.kt`; AntiLag drops chunk extras. **AutoBuilder's verification depends on this pipeline** (name-level) plus direct `UpdateBlockPacket` definition capture in `AutoBuilder.onUpdateBlock` (state-level, v2a).
 - `BlockDefinition`, `SimpleBlockDefinition`, `DefinitionRegistry`, `SimpleDefinitionRegistry`, `NamedDefinition`, `SimpleNamedDefinition` — `core/relay/Definitions.kt` (protocol→palette registries incl. the custom `NbtBlockDefinitionRegistry`) + `PlacementUtil.getBlockDefinition`.
 - `BlockEventPacket` — AntiPiston. `BlockEntityDataPacket`-adjacent storage scanning lives in ESP/ChunkParser via `NbtMap`.
-- `LevelEventPacket`, `LevelEvent`, `LevelSoundEvent2Packet`, `LevelSoundEventPacket`, `PlaySoundPacket`, `CameraShakePacket`, `AnimatePacket` — AntiBed, AntiLag, WeatherController (client-bound `LevelEventPacket` injection), CrystalAura, NoHurtCam, Timer, PacketUtil.
+- `LevelEventPacket`, `LevelEvent`, `LevelSoundEvent2Packet`, `LevelSoundEventPacket`, `PlaySoundPacket`, `CameraShakePacket`, `AnimatePacket` — AntiLag, WeatherController (client-bound `LevelEventPacket` injection), NoHurtCam, Timer, PacketUtil.
 
 ### Entities / data
 - `AddEntityPacket` (+ `EntityLinkData`), `EntityDataMap`, `EntityDataTypes`, `EntityFlag`, `SetEntityDataPacket`, `AttributeData`, `UpdateAttributesPacket`, `EntityEventPacket`, `EntityEventType`, `MobEffectPacket`, `MobArmorEquipmentPacket`, `PlayerListPacket`, `SetTimePacket` — EntityTracker modelling; Hitbox (rewrites width/height client-bound), ElytraFly glide-spoof, NoFire/AntiBlind, GodMode, ChatSpammer/PopCounter, FullBright (`SetTimePacket` + night-vision `MobEffectPacket`), FOVChanger, ArmorHide.
 
 ### Abilities family
-`UpdateAbilitiesPacket`, `RequestAbilityPacket`, `Ability`, `AbilityLayer`, `CommandPermission`, `PlayerPermission`, `AdventureSettingsPacket` — Speed, CreativeFly, BypassFly, LifeboatFly, FreeCam, NoClip, ElytraFly, TPAura; FlightProbe logs all of them.
+`UpdateAbilitiesPacket`, `RequestAbilityPacket`, `Ability`, `AbilityLayer`, `CommandPermission`, `PlayerPermission`, `AdventureSettingsPacket` — Speed, CreativeFly, BypassFly, LifeboatFly, FreeCam, NoClip, ElytraFly; FlightProbe logs all of them.
 
 ### Commands / chat
-`CommandRequestPacket`, `CommandOriginData`, `CommandOriginType` — AutoBaseFinder/AutoTravel (`/sethome` injection), ChatAdvertiser. `TextPacket` — announce paths (AnchorAura, AutoMine, AutoTravel, ChatAdvertiser, ChatSpammer, CommandHelper, PopCounter, CP… ).
+`CommandRequestPacket`, `CommandOriginData`, `CommandOriginType` — AutoBaseFinder/AutoTravel (`/sethome` injection), ChatAdvertiser. `TextPacket` — announce paths (AutoMine, AutoTravel, ChatAdvertiser, ChatSpammer, CommandHelper, PopCounter, CP… ).
 
 ### Schematics subsystem
 `NbtMap`, `NbtType`, `NbtUtils`, `NBTInputStream` (+ fastutil) — `core/schem/SchematicModel.kt` (all three loaders), `core/schem/BuildBlocks.kt`, `utils/ChunkParser.kt`, ShulkerPreview. `UnknownPacket` + `VarInts` + `SpawnParticleEffectPacket` — `core/schem/DebugDrawerBoxes.kt` hand-encodes DebugDrawer (packet id **328**) — see `SCHEMATICA.md`.
@@ -85,7 +85,7 @@ Companion: `MODULES.md` (per-module function detail), `CORE-ARCHITECTURE.md`.
 Movement & frames
 1. **`PlayerAuthInputPacket.position` is eye-frame** (y ≈ +1.62 vs feet): `EntityTracker.selfYFrameIsEye` toggles frame handling; `MovePlayerPacket.Position` is **feet-frame**. Anything touching `CollisionGuard.feetY()`/AutoBuilder reach depends on the distinction staying accurate.
 2. Auth-input flag bits are `EnumSet` ordinals: **34 = PERFORM_ITEM_INTERACTION, 35 = PERFORM_BLOCK_ACTIONS, 36 = PERFORM_ITEM_STACK_REQUEST** (pinned in `AUTOBUILD.md` against PMMP). If Cloudburst reorders the enum, bit semantics silently shift.
-3. `MovePlayerPacket.Mode.TELEPORT` vs `NORMAL` choice is load-bearing for lagback behaviour (`PacketUtil.kt`, ACA, NoLagback micro-resyncs).
+3. `MovePlayerPacket.Mode.TELEPORT` vs `NORMAL` choice is load-bearing for lagback behaviour (`PacketUtil.kt`, NoLagback micro-resyncs).
 4. `SetEntityMotionPacket` = `(runtimeEntityId, motion: Vector3f)` — sender-side modules assume it applies unclamped (motion flies).
 
 Placement wire (verified, see `AUTOBUILD.md` verification table)

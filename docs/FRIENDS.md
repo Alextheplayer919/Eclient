@@ -64,6 +64,7 @@ sent AddPlayerPacket for) with entity records as fallback
 
 ### Later milestone (decision recorded)
 
-KillAura targeting order — enemies first (ignoring distance) → neutrals by
-distance → friends as configurable last resort — will consume these lists in
-a dedicated combat-logic milestone.
+No aura module currently reads these lists (the client ships only AutoTotem,
+Criticals and Hitbox, none of which target players). A future combat module
+would consume them with the order enemies first (ignoring distance) →
+neutrals by distance → friends as configurable last resort.
