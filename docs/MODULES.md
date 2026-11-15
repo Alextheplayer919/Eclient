@@ -96,15 +96,17 @@ adds orbit/strafe positioning on top of the aim.
 - **Key functions**: `searchForTargets`, `isTarget`, `localFrame`,
   `applyRotations`, `applyKiwiRotation`, `kiwiChestPosition`, `resetRotations`.
 
-### Surround — `module/combat/Surround.kt` (565 lines)
+### Surround — `module/combat/Surround.kt` (615 lines)
 Seals the cells around the player's feet with blast-resistant blocks so an end
 crystal detonates outside the hitbox. The ring is built from the **real occupied
 footprint** (a 0.6-wide box can span two or four cells), not one assumed block.
 - **Settings**: Block (OBSIDIAN / CRYING / ANY / CUSTOM), Custom id, Shape
-  (CARDINAL 4 / FULL_RING 8), Trigger (ALWAYS / ON_TOGGLE / SMART), Rotation
-  (SILENT / VISIBLE / NONE), Threat range (12, 4–24), Tick ms (80, 20–2000),
-  Max per tick (1, 1–4), Support floats, Only on ground, Auto-disable when
-  sealed, Debug.
+  (**FULL_RING 8** default / CARDINAL 4), Trigger (ALWAYS / ON_TOGGLE / SMART),
+  Rotation (SILENT / VISIBLE / NONE), Threat range (12, 4–24), Tick ms
+  (80, 20–2000), Max per tick (1, 1–4), Support floats, Only on ground,
+  Auto-disable when sealed, Debug.
+- **Shape default is FULL_RING**: cardinal-only leaves the four diagonal cells
+  open, and a crystal placed on a diagonal still pops you.
 - **Driver**: runs from the outgoing `PlayerAuthInputPacket`, gated by `Tick ms`
   — not a coroutine timer. Driving from the packet is what keeps the aim ahead
   of the placement on the wire: the rotation is rewritten and the ITEM_USE is
@@ -129,7 +131,10 @@ footprint** (a 0.6-wide box can span two or four cells), not one assumed block.
   servers). Eye Y here comes from `CollisionGuard.feetY() + 1.62`, which is
   frame-correct. See the class KDoc.
 - **Notes**: first caller of `PlacementUtil.findClickableNeighbor`; face ids are
-  the canonical `core/schem/BuildBlocks.Face` numbering. `pauseWhileEating` is
+  the canonical `core/schem/BuildBlocks.Face` numbering. The `blockId` passed to
+  `sendPlacementUseRaw` is the **clicked** block's identifier (it becomes the
+  packet's `blockDefinition`), not the block being placed — same as `Scaffold`
+  and `AutoBuilder`. `pauseWhileEating` is
   forced `false` — a placement does not cancel an eat, and a defensive module
   that drops mid-gapple is worse than none (same choice as AutoTotem).
 

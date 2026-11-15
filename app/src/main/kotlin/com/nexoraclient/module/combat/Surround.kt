@@ -35,10 +35,11 @@ import kotlin.math.sqrt
  * occupied cells and the ring is built around their union.
  *
  * `Shape` selects the ring:
- *  - **CARDINAL** (default) — the 4 cells sharing a face with your footprint.
- *    Enough to stop a crystal pop; cheapest.
- *  - **FULL_RING** — adds the 4 diagonals, sealing a 3x3 area. Needed on
- *    servers where opponents place crystals on diagonal corners.
+ *  - **FULL_RING** (default) — all 8 cells around your footprint, sealing a 3x3
+ *    area. Cardinal-only leaves the four diagonal cells open, and a crystal
+ *    placed on a diagonal still pops you, so it is not really a surround.
+ *  - **CARDINAL** — only the 4 cells sharing a face with your footprint.
+ *    Cheaper on blocks, but the diagonals stay open.
  *
  * ## Placement path
  *
@@ -50,6 +51,11 @@ import kotlin.math.sqrt
  *   `PlacementUtil.sendPlacementUseRaw`   → ITEM_USE (actionType 0) + the
  *                                           mandatory consumption action record
  *   `PlacementUtil.revert`                → restore the previous hotbar slot
+ *
+ * The `blockId` handed to `sendPlacementUseRaw` is the identifier of the block
+ * being CLICKED, not the block being placed — it becomes the packet's
+ * `blockDefinition`, i.e. "which existing block does this face belong to".
+ * `Scaffold` and `AutoBuilder` both pass the clicked block; see `send`.
  *
  * The face ids from `findClickableNeighbor` are the repo's canonical
  * `core/schem/BuildBlocks.Face` numbering (DOWN 0, UP 1, NORTH 2, SOUTH 3,
@@ -149,7 +155,7 @@ class Surround : BaseModule(
 
     private val blockChoice    = enum("Block", BlockChoice.OBSIDIAN)
     private val customId       = string("Custom id", "minecraft:obsidian")
-    private val shape          = enum("Shape", Shape.CARDINAL)
+    private val shape          = enum("Shape", Shape.FULL_RING)
     private val trigger        = enum("Trigger", Trigger.ALWAYS)
     private val rotationMode   = enum("Rotation", RotMode.SILENT)
     private val threatRange    = float("Threat range", 12f, 4f, 24f)
@@ -258,6 +264,9 @@ class Surround : BaseModule(
     /** Standing eye height. Matches `CollisionGuard.EYE`. */
     private val EYE = 1.62f
 
+    /** Guard against a feetY a hair below the block top (see `pass`). */
+    private val Y_EPSILON = 0.001f
+
     /** Every cell the player's box actually occupies on this Y level. */
     private fun footprint(x: Float, z: Float): Set<Pair<Int, Int>> {
         val x0 = floor(x - HALF_W).toInt()
@@ -327,16 +336,19 @@ class Surround : BaseModule(
      *  block ends up. Split out from sending so the rotation can be computed
      *  and applied BEFORE the ITEM_USE goes out. */
     private data class Plan(
-        val support: Vector3i,
-        val face:    Int,
-        val tx:      Int,
-        val ty:      Int,
-        val tz:      Int
+        val support:   Vector3i,
+        /** Identifier of the block we click. This is NOT the block we place —
+         *  see the note in [send]. */
+        val supportId: String,
+        val face:      Int,
+        val tx:        Int,
+        val ty:        Int,
+        val tz:        Int
     )
 
     private fun planFor(x: Int, y: Int, z: Int, sink: ((String) -> Unit)?): Plan? {
         PlacementUtil.findClickableNeighbor(x, y, z)?.let { nb ->
-            return Plan(nb.first, nb.third, x, y, z)
+            return Plan(nb.first, nb.second, nb.third, x, y, z)
         }
         // Nothing solid touches the cell — you are on a pillar. Put a floor
         // under it first; the next pass clicks that floor's top face.
@@ -345,7 +357,7 @@ class Surround : BaseModule(
         if (isPending(x, sy, z)) return null
         val sup = PlacementUtil.findClickableNeighbor(x, sy, z) ?: return null
         sink?.invoke("support stage: floor under ($x,$y,$z) from (${sup.first.x},${sup.first.y},${sup.first.z})")
-        return Plan(sup.first, sup.third, x, sy, z)
+        return Plan(sup.first, sup.second, sup.third, x, sy, z)
     }
 
     // ── main pass ──────────────────────────────────────────────────────────
@@ -356,7 +368,12 @@ class Surround : BaseModule(
         if (trigger.value == Trigger.ON_TOGGLE && oneShotDone) return
         if (trigger.value == Trigger.SMART && !threatNearby()) return
 
-        val py    = floor(CollisionGuard.feetY()).toInt()
+        // A player standing exactly on a block top reports that integer as
+        // feetY, and float jitter can land it a hair BELOW (64.9999) — floor()
+        // then picks the block underneath, the whole ring is computed one level
+        // low, the solid ground reads as "already filled", and the module
+        // reports a sealed surround that is not there. Nudge up before floor().
+        val py    = floor(CollisionGuard.feetY() + Y_EPSILON).toInt()
         val selfX = EntityTracker.selfX
         val selfZ = EntityTracker.selfZ
         val cells = ringCells(py, selfX, selfZ)
@@ -375,6 +392,19 @@ class Surround : BaseModule(
             }
         }
 
+        if (debug.value) {
+            // Everything needed to answer "why did it place THERE" from one log
+            // line: where the client thinks we are, which Y level was chosen,
+            // which cells count as ours, and the ring that came out of it.
+            log("geom self=(%.2f,%.2f) feetY=%.3f py=%d shape=%s feet=%s".format(
+                selfX, selfZ, CollisionGuard.feetY(), py, shape.value,
+                footprint(selfX, selfZ).sortedBy { it.first * 1000 + it.second }
+            ))
+            log("ring py=%d cells=%s".format(py, cells.map { c ->
+                "${c.first},${c.second}=${cellState(c.first, py, c.second)}"
+            }))
+        }
+
         if (todo.isEmpty()) {
             if (trigger.value == Trigger.ON_TOGGLE) oneShotDone = true
             // Sealed means every ring cell is a real block — pending/unknown do
@@ -382,6 +412,8 @@ class Surround : BaseModule(
             if (autoDisable.value && unknown == 0 && inFlight == 0 && filled == cells.size) {
                 announce("§a[Surround]§r sealed — disabled")
                 setEnabled(false)
+            } else if (debug.value) {
+                log("nothing to do: filled=$filled inflight=$inFlight unknown=$unknown")
             }
             return
         }
@@ -404,7 +436,7 @@ class Surround : BaseModule(
                 if (placed >= cap) break
                 val plan = planFor(c.first, py, c.second, sink) ?: continue
                 applyRotation(session, packet, plan)
-                if (send(session, prepared, id, plan, sink)) placed++
+                if (send(session, prepared, plan, sink)) placed++
             }
         } finally {
             PlacementUtil.revert(session, prepared)
@@ -507,21 +539,39 @@ class Surround : BaseModule(
 
     // ── placement ──────────────────────────────────────────────────────────
 
+    /**
+     * Send one placement.
+     *
+     * `blockId` here is the block being **CLICKED** (`plan.supportId`), not the
+     * block being placed — `sendPlacementUseRaw` resolves it into the packet's
+     * `blockDefinition`, which tells the server which existing block the face
+     * belongs to. Passing the placed item instead tells the server "I clicked
+     * obsidian" while the real block under the cursor is grass, which is exactly
+     * the kind of mismatch this codebase has already been bitten by once (see
+     * the empty-`actions` note in `sendPlacementUseRaw`). Both working callers
+     * do it this way: `Scaffold` passes `refId`, `AutoBuilder` passes
+     * `WorldBlockTracker.getBlockIdentifier(support)`.
+     */
     private fun send(
         session:  RubidiumRelaySession,
         prepared: PlacementUtil.PreparedItem,
-        id:       String,
         plan:     Plan,
         sink:     ((String) -> Unit)?
     ): Boolean {
         val ok = runCatching {
             PlacementUtil.sendPlacementUseRaw(
-                session, prepared, plan.support, id,
+                session, prepared, plan.support, plan.supportId,
                 blockFace     = plan.face,
                 clickPosition = clickPointFor(plan.face),
                 debugSink     = sink
             )
         }.getOrDefault(false)
+        sink?.invoke(
+            if (ok) "placed at (${plan.tx},${plan.ty},${plan.tz}) by clicking " +
+                    "${plan.supportId} at (${plan.support.x},${plan.support.y},${plan.support.z}) face=${plan.face}"
+            else "SEND REJECTED for (${plan.tx},${plan.ty},${plan.tz}) " +
+                 "(clicked ${plan.supportId} face=${plan.face})"
+        )
         if (ok) markPending(plan.tx, plan.ty, plan.tz)
         return ok
     }
