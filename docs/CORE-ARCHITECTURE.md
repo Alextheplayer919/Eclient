@@ -1,7 +1,7 @@
 # Core architecture — relay, event bus, trackers, shared utils
 
 How the client physically sits on the wire and who owns which state. Companion
-docs: `MODULES.md` (all 76 module instances), `PROTOCOL.md` (Cloudburst usage
+docs: `MODULES.md` (all 58 module instances), `PROTOCOL.md` (Cloudburst usage
 inventory), `README.md` (index).
 
 ## 1. The big picture

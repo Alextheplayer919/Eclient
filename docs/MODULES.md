@@ -7,14 +7,16 @@ changes behaviour, you can answer "who consumes this packet/field and why"
 in one grep-free place, and detect silent behaviour regressions by comparing
 observed wire traffic against this spec.
 
-**Facts are extracted from code** (2026-09-19, commit `001458c` era): declared
+**Facts are extracted from code** (2026-09-19, commit `001458c` era; registry
+counts and the COMBAT roster re-verified 2026-11-15 against
+`module/ModuleManager.kt`): declared
 settings, `is XxxPacket` handlers, `serverBound(...)` call sites, and function
 names. Only things actually used in the code are documented. Companion docs:
 `PROTOCOL.md` (Cloudburst usage inventory), `CORE-ARCHITECTURE.md` (relay +
 trackers + event bus), `README.md` (index).
 
-Registry: `module/ModuleManager.kt` auto-registers **54 module classes /
-55 runtime instances** (ComboShortcut twice) on first access. Two files
+Registry: `module/ModuleManager.kt` auto-registers **57 module classes /
+58 runtime instances** (ComboShortcut twice) on first access. Two files
 exist but are NOT registered (dead/experimental): `misc/ShulkerDupe.kt`,
 `visual/ShulkerPreview.kt`; `social/FriendManager.kt` is a plain helper, not
 a module.
@@ -40,12 +42,12 @@ Name drift (filename vs registered class) to keep greps sane:
 - **Lifecycle**: `onEnable()` / `onDisable()` — calling `super` registers/unregisters the module on the **PacketEventBus**, so `onPacket(event)` receives traffic only while enabled.
 - **Tick driver**: `launchTickLoop(intervalMs) { ... }` launches a coroutine loop stopped automatically on disable; convert settings with `.value.toLong()`.
 - **Packets**: `override fun onPacket(event: PacketEvent)`; check `event.direction` (`CLIENT_TO_SERVER` on the wire from the game, `SERVER_TO_CLIENT` from the server) and `event.packet is XxxPacket`. Sessions come from `event.session`; send with `session.serverBound(packet)` (to the server) or `session.clientBound(packet)` (inject toward the game). Read "onPacket may be called while the relay is mid-handshake — use `playerState`/tracker guards".
-- **Chat/util**: `announce(msg)` posts a local chat line; `DiagLog.log(tag, msg)` writes the diagnostic log.
+- **Chat/util**: `DiagLog.log(tag, msg)` writes the diagnostic log. There is **no** `announce()` on `BaseModule` — a module that wants a local-only chat line builds its own S2C `TextPacket` (`Type.SYSTEM`, `isNeedsTranslation = false`, `setMessage(msg)`) and sends it through `session.clientBound(...)`. Working copies: `misc/Schematica.kt#announce`, `misc/AutoTravel.kt#announceLocal`, `combat/Surround.kt#announce`, and the replies in `core/commands/ChatCommands.kt`.
 - Cross-module helpers modules rely on: `EntityTracker` (world entity model + self position/yaw + inventory), `WorldBlockTracker` (chunk block names), `PlacementUtil`/`InventoryUtil` (aura-grade placement + hotbar machinery), `CollisionGuard`, `RotationUtil`, `OverlayService`/`OverlayState` (ESP rendering), `OreTracker`, `CritLock`, `MovementCompliance`.
 
 ---
 
-# COMBAT (3)
+# COMBAT (6)
 
 ### Criticals — `module/combat/Criticals.kt` (136 lines)
 Forces every hit to crit by injecting the micro-position packets vanilla jump-crits imply. ULTRA-FAST variant in code.
@@ -63,9 +65,60 @@ Keeps a totem equipped in offhand at all times.
 - **Reads**: `EntityEventPacket`, `InventoryContentPacket`, `InventorySlotPacket`.
 - **Key functions**: `refreshFromSnapshot`, `tickCheck`, `equipTotem` (→ `InventoryUtil.sendOffhandEquip`).
 
+### RotsAura — `module/combat/RotsAura.kt` (499 lines)
+KillAura ported from KiwiMods with every Lynx/Kiwi rotation engine attached. Per
+`PlayerAuthInputPacket` it selects targets in range, rewrites the rotation the
+server sees, and attacks at the configured CPS.
+- **Settings**: Range (6.0, 1–20), CPS (20, 5–30), Packets (1, 1–10), Players Only,
+  Anti Bot, Ignore Friends, Rot Mode (enum, labelled: Abysm / Circle / Square /
+  Zigzag / Spiral / Predictive / the Kiwi + Lynx sets), Randomize, Smooth Speed
+  (15, 1–45), Strafe Amp (8, 0–30), Vertical Offset (0.3, −1–1), Silent Rotation,
+  Pred Time/Strength, Rot Smoothing/Max Speed/Accel, Camera Sync, Shortcut.
+- **Reads**: `PlayerAuthInputPacket` (rotation is rewritten in place).
+- **Creates**: swing + `ITEM_USE_ON_ENTITY` attack via `PacketUtil`.
+- **Key functions**: `searchForTargets`, `isTarget`, `isBot`, `applyRotation`,
+  `computeLynxRotation`, `applyKiwiRotation`, `predictiveSettings`, `chestPos`.
+- **Rotation engines** live in `module/combat/rots/`: `AbysmRot`, `GeoRot`,
+  `HvHGod`, `KillauraRots`, `PredictiveAim`, `PredictiveRotator`, `RotsSupport`.
+
+### NeonAura — `module/combat/NeonAura.kt` (615 lines)
+Second killaura implementation (Neon source) sharing the same rotation engines;
+adds orbit/strafe positioning on top of the aim.
+- **Settings**: Range (7, 2–10), CPS (20, 5–30), Packets (1, 1–10), Players Only,
+  Mobs Only, Anti Bot, Rotations, Prediction, Prediction Ticks (2, 0–10),
+  Rotation Mode (enum), Vertical Offset, Smooth Speed, Strafe Amp, Pred Strength,
+  Rot Smoothing/Max Speed/Accel, Keep Distance (1.2, 0.5–10), Strafe Radius
+  (2.5, 1–6), Spin Direction (LEFT/RIGHT).
+- **Reads**: `PlayerAuthInputPacket`; also watches `CorrectPlayerMovePredictionPacket`
+  and `MovePlayerPacket` for the correction/orbit state.
+- **Creates**: `PacketUtil.sendSwingAndAttack`, `PacketUtil.sendMove` (with
+  `mirrorToClient` so the local physics engine follows instead of rubber-banding).
+- **Key functions**: `searchForTargets`, `isTarget`, `localFrame`,
+  `applyRotations`, `applyKiwiRotation`, `kiwiChestPosition`, `resetRotations`.
+
+### Surround — `module/combat/Surround.kt` (421 lines)
+Seals the cells around the player's feet with blast-resistant blocks so an end
+crystal detonates outside the hitbox. The ring is built from the **real occupied
+footprint** (a 0.6-wide box can span two or four cells), not one assumed block.
+- **Settings**: Block (OBSIDIAN / CRYING / ANY / CUSTOM), Custom id, Shape
+  (CARDINAL 4 / FULL_RING 8), Trigger (ALWAYS / ON_TOGGLE / SMART), Threat range
+  (12, 4–24), Tick ms (80, 20–2000), Max per tick (1, 1–4), Support floats,
+  Only on ground, Auto-disable when sealed, Debug.
+- **Tick loop**: fixed 50 ms base, gated by `Tick ms` — every setting is live.
+- **Reads**: `WorldBlockTracker` cell ids only; sends no position packets.
+- **Creates**: `ITEM_USE` (actionType 0) placements through
+  `PlacementUtil.sendPlacementUseRaw`, with the mandatory consumption action record.
+- **Key functions**: `footprint`, `ringCells`, `cellState`, `placeInto`
+  (falls back to a support block under floating cells), `clickPointFor`,
+  `threatNearby`.
+- **Notes**: first caller of `PlacementUtil.findClickableNeighbor`; face ids are
+  the canonical `core/schem/BuildBlocks.Face` numbering. `pauseWhileEating` is
+  forced `false` — a placement does not cancel an eat, and a defensive module
+  that drops mid-gapple is worse than none (same choice as AutoTotem).
+
 ---
 
-# MOVEMENT (19)
+# MOVEMENT (18)
 
 ### Speed — `movement/Speed.kt` (145 lines)
 Faster walking — either Ability (UpdateAbilities) or Motion mode.
@@ -316,7 +369,6 @@ Full-fidelity packet logger → per-class log files (`Detailed/Exclude Spam/Auto
 
 | File | Class | Status |
 |---|---|---|
-| `combat/PistonAura.kt` | PistonAura | experimental piston-attack aura; NOT in `registerAll` |
 | `misc/ShulkerDupe.kt` | ShulkerDupe | dupe experiment; NOT registered |
 | `visual/ShulkerPreview.kt` | ShulkerPreview | shulker-contents preview; NOT registered |
 | `social/FriendManager.kt` | FriendManager | plain helper object (friend list), not a BaseModule |

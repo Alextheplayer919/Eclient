@@ -2,12 +2,12 @@
 
 A packet-level **proxy client for Minecraft: Bedrock Edition** (Android). The app runs as a local
 client ↔ server relay: it sits on the wire between your game and the server, reads and writes real
-Bedrock protocol packets, and powers **74 registered modules** across combat, movement, building,
+Bedrock protocol packets, and powers **58 registered module instances** across combat, movement, building,
 and automation — plus a full in-game chat command system.
 
 Release builds ship as `OxClient-*.apk` (internal app name).
 
-![Modules](https://img.shields.io/badge/modules-74-blue)
+![Modules](https://img.shields.io/badge/modules-58-blue)
 ![Platform](https://img.shields.io/badge/platform-Android-green)
 ![Protocol](https://img.shields.io/badge/Bedrock-packet%20proxy-orange)
 
@@ -75,15 +75,20 @@ public chat — and anything that isn't an exact registered command passes throu
 - **AutoTorch** — keeps hostile mobs from spawning around you; drives placement from researched
   Bedrock light-level spawn rules.
 
-### 📊 Module breakdown (55 registered)
+### 📊 Module breakdown (58 registered instances / 57 classes)
+
+Counts are by each module's declared `category` (which decides its UI section) and
+count **runtime instances** — `ComboShortcut` is registered twice. The registry in
+`module/ModuleManager.kt` groups a few of these under a different comment header;
+`docs/MODULES.md` has the full drift table.
 
 | Category | Count | Examples |
 |---|---|---|
-| ⚔️ Combat | 3 | AutoTotem, Criticals, Hitbox |
-| 🏃 Movement | 19 | MotionFly, LifeboatFly, NoClip, FreeCam, Scaffold, AntiKnockback |
-| 👁 Visual | 15 | ESP, Xray, FullBright, Hitbox render, ArrayList |
-| 🧍 Player | 7 | GodMode, AntiAFK, NoFallDamage |
-| 🌍 World | 4 | Nuker, WeatherController, AntiCheat-probes |
+| ⚔️ Combat | 5 | RotsAura, NeonAura, Criticals, Hitbox, Surround |
+| 🏃 Movement | 18 | Speed, MotionFly, LifeboatFly, NoClip, Scaffold, AntiKnockback |
+| 👁 Visual | 14 | ESP, Xray, FullBright, ArrayList, FreeCam, ChunkFinder |
+| 🧍 Player | 5 | GodMode, AntiAFK, AntiLag, AutoTotem, AutoDisconnect |
+| 🌍 World | 4 | Nuker, WeatherController, AutoSign, AutoTorch |
 | 🧩 Misc | 12 | AutoTravel, AutoMine, ChatSpammer, FlightProbe, PacketCollector |
 
 ### 💬 Community
@@ -120,6 +125,8 @@ Full internals live in [`docs/`](docs/) — packet-level notes on every sweep:
   (placement printer, field-validated)
 
 **🚧 In progress**
+- **Surround** — blast-resistant ring around your feet (footprint-aware, supports
+  floating cells), the first step of the crystal-combat rebuild
 - More world automation (schem-aware builders, travel improvements)
 
 ---
