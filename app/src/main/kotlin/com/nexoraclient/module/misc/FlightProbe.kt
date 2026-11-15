@@ -50,6 +50,7 @@ class FlightProbe : BaseModule(
 
     private val wdProbe     = bool("W/D Motion Probe", false)  // phase P5 helper
     private val motionProbe = bool("Motion Packet Probe", false) // item 7, CAUTION: live-server active probe
+    private val shortcut = bool("Shortcut", false)
 
     private var phase = 0
     private var corrIdx = 0

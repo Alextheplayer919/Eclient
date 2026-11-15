@@ -39,6 +39,7 @@ class AutoTorch : BaseModule(
     private val tickMs   = int("Tick ms", 600, 300, 2000)
     private val reach    = float("Reach", 4.2f, 2.5f, 4.6f)
     private val vertical = int("Vertical scan", 3, 1, 6)
+    private val shortcut = bool("Shortcut", false)
 
     override fun onEnable() {
         super.onEnable()

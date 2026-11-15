@@ -88,6 +88,7 @@ class Schematica : BaseModule(
     // SC-4: was 40..500 (25 placements/s is far beyond anything a player can do and looks
     // exactly like a printer to an anticheat). 100 ms minimum, 150 ms default.
     private val abDelay    = int("Auto Build tick ms", 150, 100, 500)
+    private val shortcut = bool("Shortcut", false)
     @Volatile private var autoBuilder: AutoBuilder? = null
 
     @Volatile private var model: SchematicModel? = null

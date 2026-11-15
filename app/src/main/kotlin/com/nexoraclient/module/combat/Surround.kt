@@ -8,6 +8,7 @@ import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
 import com.rubidiumclient.module.social.isFriendEntity
 import com.rubidiumclient.utils.DiagLog
+import com.rubidiumclient.utils.PacketUtil
 import com.rubidiumclient.utils.PlacementUtil
 import com.rubidiumclient.utils.RotationUtil
 import com.rubidiumclient.utils.WorldBlockTracker
@@ -17,6 +18,7 @@ import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
 import org.cloudburstmc.protocol.bedrock.packet.TextPacket
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.floor
 import kotlin.math.sqrt
@@ -35,11 +37,37 @@ import kotlin.math.sqrt
  * occupied cells and the ring is built around their union.
  *
  * `Shape` selects the ring:
- *  - **FULL_RING** (default) — all 8 cells around your footprint, sealing a 3x3
- *    area. Cardinal-only leaves the four diagonal cells open, and a crystal
- *    placed on a diagonal still pops you, so it is not really a surround.
- *  - **CARDINAL** — only the 4 cells sharing a face with your footprint.
- *    Cheaper on blocks, but the diagonals stay open.
+ *  - **CARDINAL** (default) — the four N/S/E/W cells around your footprint.
+ *    This is the standard HvH pattern. The diagonal corners are left open
+ *    *on purpose*: filling them wastes blocks and cages the player in, and a
+ *    tight cardinal ring already denies the placements that matter.
+ *  - **FULL_RING** — also seals the four diagonals. Costs four more obsidian
+ *    and restricts movement; only worth it where opponents abuse corners.
+ *
+ * ## Center, Extend and Extra Layer
+ *
+ *  - **Center** — a surround is only airtight from one 1x1 cell. Off-centre,
+ *    the 0.6-wide box straddles two cells, so the ring is built around both and
+ *    the cell you barely overlap is left as a hole with obsidian two blocks
+ *    out. Snapping to the block centre collapses the footprint back to one cell.
+ *    Sent only on a pass that actually places, so it never fights your walking
+ *    while the ring is sealed.
+ *  - **Extend** — if an opponent is standing in one of the surround spots, the
+ *    pattern steps one cell further out along that axis instead of leaving the
+ *    side open.
+ *  - **Extra Layer** — the reactive "double surround". Not a static second ring;
+ *    it fires only when a cell that was confirmed filled reads air again while a
+ *    threat is in range, i.e. someone is mining through, and puts a backup block
+ *    one cell further out on that side only.
+ *
+ * ## Instant re-placement
+ *
+ * The critical case: an opponent Speed-Mines a surround block and needs the gap
+ * to last long enough to place a crystal. `cellState` removes a cell from the
+ * pending set the moment the tracker confirms it filled, so a mined cell reads
+ * `EMPTY` immediately with nothing suppressing it and the next pass refills it.
+ * The pending TTL only covers the round trip before that confirmation, and the
+ * rejection case — not the re-placement case.
  *
  * ## Placement path
  *
@@ -155,9 +183,12 @@ class Surround : BaseModule(
 
     private val blockChoice    = enum("Block", BlockChoice.OBSIDIAN)
     private val customId       = string("Custom id", "minecraft:obsidian")
-    private val shape          = enum("Shape", Shape.FULL_RING)
+    private val shape          = enum("Shape", Shape.CARDINAL)
     private val trigger        = enum("Trigger", Trigger.ALWAYS)
     private val rotationMode   = enum("Rotation", RotMode.SILENT)
+    private val center         = bool("Center", true)
+    private val extend         = bool("Extend", true)
+    private val extraLayer     = bool("Extra Layer", false)
     private val threatRange    = float("Threat range", 12f, 4f, 24f)
     private val tickMs         = int("Tick ms", 80, 20, 2000)
     private val perTick        = int("Max per tick", 1, 1, 4)
@@ -165,6 +196,8 @@ class Surround : BaseModule(
     private val onlyOnGround   = bool("Only on ground", true)
     private val autoDisable    = bool("Auto-disable when sealed", false)
     private val debug          = bool("Debug", false)
+    /** Read by name from `ModuleManager.shortcutModules()`, not referenced here. */
+    private val shortcut       = bool("Shortcut", false)
 
     /** Defensive: a placement does not cancel an eat, and a shield that drops
      *  while you are eating a gapple is not a shield. */
@@ -181,11 +214,15 @@ class Surround : BaseModule(
         oneShotDone = false
         nextRunAt   = 0L
         pending.clear()
+        confirmed.clear()
+        lastAnchor  = null
     }
 
     override fun onDisable() {
         lastSession = null
         pending.clear()
+        confirmed.clear()
+        lastAnchor  = null
         super.onDisable()
     }
 
@@ -303,7 +340,18 @@ class Surround : BaseModule(
 
     private fun cellState(x: Int, y: Int, z: Int): CellState {
         val id = WorldBlockTracker.getBlockIdentifier(x, y, z) ?: return CellState.UNKNOWN
-        if (id !in REPLACEABLE) return CellState.FILLED
+        if (id !in REPLACEABLE) {
+            // The tracker now reports a real block here, so our placement is
+            // CONFIRMED — drop it from the pending set. This is what makes
+            // instant re-placement work: the moment an opponent mines the
+            // block, the cell reads air with nothing suppressing it and the
+            // next pass fills it again. Without the clear, the TTL would hold
+            // a broken cell open for its whole window, and that window is
+            // precisely the one an opposing AutoCrystal needs.
+            pending.remove(PlacementUtil.posKey(x, y, z))
+            confirmed.add(PlacementUtil.posKey(x, y, z))
+            return CellState.FILLED
+        }
         return if (isPending(x, y, z)) CellState.PENDING else CellState.EMPTY
     }
 
@@ -311,10 +359,33 @@ class Surround : BaseModule(
 
     private val pending = ConcurrentHashMap<Long, Long>()
 
-    /** How long a sent placement counts as "done" before we dare retry it.
-     *  Long enough for the server echo, short enough that a rejected placement
-     *  gets another attempt. */
-    private val PENDING_TTL_MS = 1500L
+    /**
+     * Cells the tracker has confirmed as filled at least once, for the current
+     * anchor cell only (cleared when we move to a different block). Drives the
+     * reactive Extra Layer: a cell in here that reads air again was mined.
+     */
+    private val confirmed: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+
+    /** Anchor cell the `confirmed` set belongs to. */
+    @Volatile private var lastAnchor: Pair<Int, Int>? = null
+
+    /** How far to look for an entity standing in a surround spot (Extend). */
+    private val EXTEND_SCAN = 6f
+
+    /** Off-centre distance small enough to leave alone rather than snap. */
+    private val CENTER_EPS = 0.05f
+
+    /**
+     * How long a sent placement is assumed to be in flight before we retry it.
+     *
+     * This only has to cover the round trip until the server echoes the block
+     * back — `cellState` clears the entry the moment that happens. It is NOT
+     * what limits re-placement after a block is mined: that is instant, because
+     * a confirmed cell was already removed from this set. Keeping it short
+     * matters for the other case (the server rejected the placement), where a
+     * long window would leave the hole open.
+     */
+    private val PENDING_TTL_MS = 600L
 
     private fun markPending(x: Int, y: Int, z: Int) {
         pending[PlacementUtil.posKey(x, y, z)] = System.currentTimeMillis()
@@ -373,9 +444,34 @@ class Surround : BaseModule(
         // then picks the block underneath, the whole ring is computed one level
         // low, the solid ground reads as "already filled", and the module
         // reports a sealed surround that is not there. Nudge up before floor().
-        val py    = floor(CollisionGuard.feetY() + Y_EPSILON).toInt()
-        val selfX = EntityTracker.selfX
-        val selfZ = EntityTracker.selfZ
+        val py   = floor(CollisionGuard.feetY() + Y_EPSILON).toInt()
+        val rawX = EntityTracker.selfX
+        val rawZ = EntityTracker.selfZ
+
+        // ── Center ──
+        // A surround is only airtight from a single 1x1 cell. Off-centre, the
+        // 0.6-wide box straddles two cells, `footprint` returns both, the ring
+        // is built around their union, and the cell you barely overlap is left
+        // as a hole with obsidian two blocks out — the "wide ring with a gap
+        // next to me" shape. Snapping to the block centre collapses the
+        // footprint to exactly one cell, so the ring is the tight 1x1 cardinal
+        // pattern again.
+        val cx = floor(rawX).toInt() + 0.5f
+        val cz = floor(rawZ).toInt() + 0.5f
+        val offCentre = center.value &&
+            (abs(cx - rawX) > CENTER_EPS || abs(cz - rawZ) > CENTER_EPS)
+        // Plan against where we are about to be, not where we were.
+        val selfX = if (center.value) cx else rawX
+        val selfZ = if (center.value) cz else rawZ
+
+        // The confirmed-cell memory only means anything for one anchor cell;
+        // drop it when we move to a different block.
+        val anchor = floor(selfX).toInt() to floor(selfZ).toInt()
+        if (anchor != lastAnchor) {
+            confirmed.clear()
+            lastAnchor = anchor
+        }
+
         val cells = ringCells(py, selfX, selfZ)
         if (cells.isEmpty()) return
 
@@ -418,6 +514,58 @@ class Surround : BaseModule(
             return
         }
 
+        // ── Extend ──
+        // An opponent standing in one of the surround spots makes that cell
+        // unplaceable, so push the pattern one cell further out along the same
+        // axis and work around them instead of leaving the side open.
+        if (extend.value) {
+            val ax = floor(selfX).toInt()
+            val az = floor(selfZ).toInt()
+            for (c in cells) {
+                if (cellState(c.first, py, c.second) != CellState.EMPTY) continue
+                if (!entityInCell(c.first, py, c.second)) continue
+                val outer = (c.first + (c.first - ax)) to (c.second + (c.second - az))
+                if (cellState(outer.first, py, outer.second) == CellState.EMPTY &&
+                    outer !in todo
+                ) {
+                    todo.add(outer)
+                    if (debug.value) {
+                        log("extend: ${c.first},${c.second} occupied -> ${outer.first},${outer.second}")
+                    }
+                }
+            }
+        }
+
+        // ── Extra Layer — reactive double surround ──
+        // Deliberately NOT a static second ring (that would waste blocks and
+        // cage the player in). It fires only on the side an opponent is mining
+        // through: a cell that was confirmed filled and now reads air, with a
+        // threat in range, gets a backup block one cell further out so a crystal
+        // still cannot be placed against you during the re-fill window.
+        if (extraLayer.value && threatNearby()) {
+            val ax = floor(selfX).toInt()
+            val az = floor(selfZ).toInt()
+            for (c in cells) {
+                val key = PlacementUtil.posKey(c.first, py, c.second)
+                if (!confirmed.contains(key)) continue
+                if (cellState(c.first, py, c.second) != CellState.EMPTY) continue
+                val outer = (c.first + (c.first - ax)) to (c.second + (c.second - az))
+                if (cellState(outer.first, py, outer.second) == CellState.EMPTY &&
+                    outer !in todo
+                ) {
+                    todo.add(outer)
+                    if (debug.value) {
+                        log("extra layer: ${c.first},${c.second} mined -> ${outer.first},${outer.second}")
+                    }
+                }
+            }
+        }
+
+        // Send the centre move only once we know there is something to place —
+        // snapping on every pass would fight the player's own walking even when
+        // the ring is already sealed.
+        if (offCentre) centerPlayer(session, cx, cz)
+
         val id = pickAvailableId() ?: run {
             if (debug.value) log("no block in inventory (tried ${candidateIds().joinToString()})")
             return
@@ -454,6 +602,43 @@ class Surround : BaseModule(
         val r = threatRange.value
         if (EntityTracker.getCrystals(r).isNotEmpty()) return true
         return EntityTracker.getPlayers(r).any { !it.isFriendEntity }
+    }
+
+    /**
+     * Any entity whose body overlaps this cell — the Extend trigger. The
+     * vertical window is deliberately generous: entity Y is feet-frame for
+     * anything tracked from MovePlayer, but a 1..2 block band either side of
+     * the surround level covers both that and eye-frame records without
+     * needing to resolve which one we got.
+     */
+    private fun entityInCell(x: Int, y: Int, z: Int): Boolean =
+        EntityTracker.getEntitiesInRange(EXTEND_SCAN).any { e ->
+            floor(e.x).toInt() == x &&
+                floor(e.z).toInt() == z &&
+                e.y > y - 1.0f && e.y < y + 2.0f
+        }
+
+    /**
+     * Snap the player to the centre of the block they are standing in.
+     *
+     * Feet-frame Y on purpose. `PacketUtil.sendMoveAtSelf` would pass
+     * `EntityTracker.selfY`, which is eye-frame on auth-input-only servers and
+     * would claim a position 1.62 too high — see the class KDoc.
+     * `mirrorToClient` is required, not cosmetic: without it the server has us
+     * centred while the local physics engine keeps the old spot and pulls us
+     * back, which is the rubber-band the `PacketUtil` comment warns about.
+     */
+    private fun centerPlayer(session: RubidiumRelaySession, cx: Float, cz: Float) {
+        runCatching {
+            PacketUtil.sendMove(
+                session, cx, CollisionGuard.feetY(), cz,
+                EntityTracker.selfYaw, EntityTracker.selfPitch,
+                onGround       = EntityTracker.selfOnGround,
+                teleport       = false,
+                mirrorToClient = true
+            )
+            if (debug.value) log("centered to (%.2f,%.2f)".format(cx, cz))
+        }.onFailure { log("center threw: ${it.message}") }
     }
 
     // ── rotation ───────────────────────────────────────────────────────────

@@ -31,6 +31,7 @@ class AirJump : BaseModule(
     private val infinite      = bool ("Infinite",         false)
     private val cooldownMs    = int  ("Cooldown",         250,   50,  1000)
     private val resetOnGround = bool ("Reset On Ground",  true)
+    private val shortcut = bool("Shortcut", false)
 
     @Volatile private var jumpsUsed      = 0
     @Volatile private var wasJumpPressed = false

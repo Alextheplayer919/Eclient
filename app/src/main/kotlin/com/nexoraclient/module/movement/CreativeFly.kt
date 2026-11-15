@@ -30,6 +30,7 @@ class CreativeFly : BaseModule(
     private val antiRubberband    = bool ("Anti Rubber-band", true)
     private val rubberbandMaxStep = float("Max Step",         0.9f, 0.3f, 2.0f)
     private val rubberbandDelayMs = int  ("Step Delay (ms)",  12,   2,   40)
+    private val shortcut = bool("Shortcut", false)
 
     @Volatile private var lastSession: RubidiumRelaySession? = null
     @Volatile private var canFly = false

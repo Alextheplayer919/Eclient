@@ -26,6 +26,7 @@ class PacketCollector : BaseModule(
     private val autoFlush       = bool("Auto Flush",         true)
     private val flushInterval   = int ("Flush Interval (ms)",5000,  1000, 30000)
     private val deleteOnDisable = bool("Delete On Disable",  false)   // optional: delete all logs when disabled
+    private val shortcut = bool("Shortcut", false)
 
     private val baseDir by lazy { getLogDirectory() }
     private val writers = ConcurrentHashMap<String, PrintWriter>()

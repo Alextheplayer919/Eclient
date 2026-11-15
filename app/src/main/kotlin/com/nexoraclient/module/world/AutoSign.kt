@@ -34,6 +34,7 @@ class AutoSign : BaseModule(
     private val dateLine = int("Date line (1-4)", 3, 1, 4)
     private val includeBack = bool("Also fill back side", false)
     private val dateFormat  = string("Date format", "dd MMM yyyy")
+    private val shortcut = bool("Shortcut", false)
 
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return

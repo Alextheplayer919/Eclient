@@ -12,6 +12,8 @@ class NoHurtCam : BaseModule(
     category    = ModuleCategory.VISUAL,
     description = "Hasar alma kafa sallantısını ve ekran titreşimini engeller"
 ) {
+    private val shortcut = bool("Shortcut", false)
+
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
         if (event.direction != PacketEvent.Direction.SERVER_TO_CLIENT) return

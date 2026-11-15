@@ -43,6 +43,7 @@ Name drift (filename vs registered class) to keep greps sane:
 - **Tick driver**: `launchTickLoop(intervalMs) { ... }` launches a coroutine loop stopped automatically on disable; convert settings with `.value.toLong()`.
 - **Packets**: `override fun onPacket(event: PacketEvent)`; check `event.direction` (`CLIENT_TO_SERVER` on the wire from the game, `SERVER_TO_CLIENT` from the server) and `event.packet is XxxPacket`. Sessions come from `event.session`; send with `session.serverBound(packet)` (to the server) or `session.clientBound(packet)` (inject toward the game). Read "onPacket may be called while the relay is mid-handshake — use `playerState`/tracker guards".
 - **Chat/util**: `DiagLog.log(tag, msg)` writes the diagnostic log. There is **no** `announce()` on `BaseModule` — a module that wants a local-only chat line builds its own S2C `TextPacket` (`Type.SYSTEM`, `isNeedsTranslation = false`, `setMessage(msg)`) and sends it through `session.clientBound(...)`. Working copies: `misc/Schematica.kt#announce`, `misc/AutoTravel.kt#announceLocal`, `combat/Surround.kt#announce`, and the replies in `core/commands/ChatCommands.kt`.
+- **Shortcut convention**: every module declares `private val shortcut = bool("Shortcut", false)`. It is picked up generically by `ModuleManager.shortcutModules()` (filters any `BoolSetting` named `"Shortcut"` whose value is true) and consumed only by `ui/overlay/OverlayService.kt:370`, which adds/removes a floating per-module button at `OverlayPositions.shortcuts[name]`. Nothing else reads it, so adding the bool is all a module needs to become shortcut-able — no registry or UI change. **A new module must include it.**
 - Cross-module helpers modules rely on: `EntityTracker` (world entity model + self position/yaw + inventory), `WorldBlockTracker` (chunk block names), `PlacementUtil`/`InventoryUtil` (aura-grade placement + hotbar machinery), `CollisionGuard`, `RotationUtil`, `OverlayService`/`OverlayState` (ESP rendering), `OreTracker`, `CritLock`, `MovementCompliance`.
 
 ---
@@ -96,17 +97,41 @@ adds orbit/strafe positioning on top of the aim.
 - **Key functions**: `searchForTargets`, `isTarget`, `localFrame`,
   `applyRotations`, `applyKiwiRotation`, `kiwiChestPosition`, `resetRotations`.
 
-### Surround — `module/combat/Surround.kt` (615 lines)
-Seals the cells around the player's feet with blast-resistant blocks so an end
-crystal detonates outside the hitbox. The ring is built from the **real occupied
-footprint** (a 0.6-wide box can span two or four cells), not one assumed block.
+### Surround — `module/combat/Surround.kt` (800 lines)
+Denial placement: seal a 1x1 hole around the player's feet with blast-resistant
+blocks so the opponent has nowhere to put a crystal. Built from the **real
+occupied footprint** (a 0.6-wide box can span two or four cells), not one
+assumed block.
 - **Settings**: Block (OBSIDIAN / CRYING / ANY / CUSTOM), Custom id, Shape
-  (**FULL_RING 8** default / CARDINAL 4), Trigger (ALWAYS / ON_TOGGLE / SMART),
-  Rotation (SILENT / VISIBLE / NONE), Threat range (12, 4–24), Tick ms
-  (80, 20–2000), Max per tick (1, 1–4), Support floats, Only on ground,
-  Auto-disable when sealed, Debug.
-- **Shape default is FULL_RING**: cardinal-only leaves the four diagonal cells
-  open, and a crystal placed on a diagonal still pops you.
+  (**CARDINAL 4** default / FULL_RING 8), **Center** (true), **Extend** (true),
+  **Extra Layer** (false), Trigger (ALWAYS / ON_TOGGLE / SMART), Rotation
+  (SILENT / VISIBLE / NONE), Threat range (12, 4–24), Tick ms (80, 20–2000),
+  Max per tick (1, 1–4), Support floats, Only on ground, Auto-disable when
+  sealed, Shortcut, Debug.
+- **Shape default is CARDINAL**: the four cardinal cells are what seal a 1x1
+  hole. The corners stay open on purpose — filling them wastes blocks and
+  restricts movement. `FULL_RING` is offered as the option, not the default.
+- **Center** is what stops the classic "2-wide ring with a hole next to me":
+  an off-centre player's 0.6-wide box straddles two cells, so the ring of its
+  union is 2 cells wide on that axis and the far diagonal cell is never a
+  neighbour of the ring, staying open. The module snaps the player to the centre
+  of its block (feet-frame `PacketUtil.sendMove`, `mirrorToClient`) whenever it
+  is further than 0.05 from centre, and **plans against the snapped position**,
+  so the ring is computed for where the player will actually be.
+- **Extend** steps the pattern outward on an axis when a player or crystal
+  occupies a surround spot — that spot gets a block (it is a crystal spot), and
+  the ring extends one cell past them.
+- **Extra Layer** is reactive, not a second static ring: it fires when a cell
+  this module already filled reads empty again (mined through by Speed Mine /
+  Auto Mine) **and** a hostile is within `Threat range`. Cells are tracked in
+  `confirmed`, cleared when the anchor moves.
+- **Instant re-placement** is the core guarantee, not a rate: a filled cell is
+  `confirmed` and dropped from `pending`, so the moment its block disappears the
+  next pass sees EMPTY and refills it immediately. `PENDING_TTL_MS` is 600 ms —
+  it only bounds the pre-echo round trip and the rejection retry.
+- **Rotation** rotates the player server-side while placing, since real
+  anti-cheat validates aim against placement. `SILENT` rewrites the outgoing
+  `PlayerAuthInputPacket` only; `VISIBLE` also mirrors a client-only move.
 - **Driver**: runs from the outgoing `PlayerAuthInputPacket`, gated by `Tick ms`
   — not a coroutine timer. Driving from the packet is what keeps the aim ahead
   of the placement on the wire: the rotation is rewritten and the ITEM_USE is
@@ -116,11 +141,12 @@ footprint** (a 0.6-wide box can span two or four cells), not one assumed block.
   `WorldBlockTracker` cell ids.
 - **Creates**: `ITEM_USE` (actionType 0) placements through
   `PlacementUtil.sendPlacementUseRaw` with the mandatory consumption action
-  record; in VISIBLE mode also a **clientBound-only** `MovePlayerPacket` to swing
-  the local camera.
-- **Key functions**: `footprint`, `ringCells`, `cellState`, `planFor` (falls back
-  to a support block under floating cells), `lookRotation`, `applyRotation`,
-  `swingClientCamera`, `clickPointFor`, `threatNearby`.
+  record; in VISIBLE mode and for the `Center` snap, a **clientBound-only**
+  `MovePlayerPacket` to swing the local camera.
+- **Key functions**: `footprint`, `ringCells`, `entityInCell`, `cellState`,
+  `centerPlayer`, `planFor` (falls back to a support block under floating
+  cells), `lookRotation`, `applyRotation`, `swingClientCamera`,
+  `clickPointFor`, `threatNearby`.
 - **Rotation**: SILENT rewrites the outgoing auth input's rotation (server sees
   the aim, screen untouched) — the `RotsAura.applyRotation` mechanism. VISIBLE
   adds the camera mirror. Because one auth input carries one rotation, a rotating

@@ -28,6 +28,8 @@ class ArrayListModule : BaseModule(
     category = ModuleCategory.VISUAL,
     description = "Aktif modülleri sağ üst köşede havalı bir liste halinde gösterir"
 ) {
+    private val shortcut = bool("Shortcut", false)
+
     private val activationTimestamps = HashMap<String, Long>()
     private val slideProgress = HashMap<String, Float>()
     private var lastFrameTimeNs = 0L
