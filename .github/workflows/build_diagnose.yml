@@ -3,6 +3,12 @@ name: OxClient APK Build
 on:
   push:
     branches: [ main, master ]
+  # PRs used to get no compile feedback at all, so a broken merge only failed
+  # once it was already on main (#4 and #6 both landed red). Every release and
+  # signing step below is gated on `github.ref == 'refs/heads/main'`, so a PR
+  # run only assembles the debug APK and runs the protocol diagnostics.
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
