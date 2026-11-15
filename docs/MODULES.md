@@ -97,7 +97,7 @@ adds orbit/strafe positioning on top of the aim.
 - **Key functions**: `searchForTargets`, `isTarget`, `localFrame`,
   `applyRotations`, `applyKiwiRotation`, `kiwiChestPosition`, `resetRotations`.
 
-### Surround — `module/combat/Surround.kt` (800 lines)
+### Surround — `module/combat/Surround.kt` (873 lines)
 Denial placement: seal a 1x1 hole around the player's feet with blast-resistant
 blocks so the opponent has nowhere to put a crystal. Built from the **real
 occupied footprint** (a 0.6-wide box can span two or four cells), not one
@@ -117,7 +117,19 @@ assumed block.
   neighbour of the ring, staying open. The module snaps the player to the centre
   of its block (feet-frame `PacketUtil.sendMove`, `mirrorToClient`) whenever it
   is further than 0.05 from centre, and **plans against the snapped position**,
-  so the ring is computed for where the player will actually be.
+  so the ring is computed for where the player will actually be. Rate-limited to
+  one snap per 300 ms and written back to `EntityTracker.selfX/selfZ` (as
+  `RubberbandGuard.send` and `NoLagback` do), otherwise `offCentre` stays true
+  until the client's own auth input catches up and the snap re-fires every pass.
+- **`EntityTracker.selfOnGround` must not be used for outgoing moves.** It is
+  written only by `EntityTracker.handleMovePlayer` (:377) and the reset (:214);
+  `handleAuthInput` never touches it, so on an auth-input-only server it holds
+  whatever the last `MovePlayerPacket` claimed — and this module sends those, so
+  the value latches. A mirrored move that claims `isOnGround = false` while the
+  player stands on the floor makes the client apply gravity from the position it
+  was just set to: it sinks into the ground. `standingOn(x, feetY, z)` reads the
+  block under the feet instead, and is used by the `Center` snap, the camera
+  mirror, and the `Only on ground` gate.
 - **Extend** steps the pattern outward on an axis when a player or crystal
   occupies a surround spot — that spot gets a block (it is a crystal spot), and
   the ring extends one cell past them.
@@ -144,7 +156,7 @@ assumed block.
   record; in VISIBLE mode and for the `Center` snap, a **clientBound-only**
   `MovePlayerPacket` to swing the local camera.
 - **Key functions**: `footprint`, `ringCells`, `entityInCell`, `cellState`,
-  `centerPlayer`, `planFor` (falls back to a support block under floating
+  `standingOn`, `centerPlayer`, `planFor` (falls back to a support block under floating
   cells), `lookRotation`, `applyRotation`, `swingClientCamera`,
   `clickPointFor`, `threatNearby`.
 - **Rotation**: SILENT rewrites the outgoing auth input's rotation (server sees

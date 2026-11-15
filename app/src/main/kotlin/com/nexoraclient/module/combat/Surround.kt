@@ -107,7 +107,7 @@ import kotlin.math.sqrt
  *    one to the server would be a redundant position claim.
  *  - **NONE** — placements go out un-aimed, as before.
  *
- * Two things this deliberately does NOT use:
+ * Three things this deliberately does NOT use:
  *
  *  - `RotationUtil.toPoint` computes `dy = ty - (selfY + 1.62f)`, but `selfY`
  *    is already eye-frame whenever `EntityTracker.selfYFrameIsEye` is true —
@@ -118,6 +118,12 @@ import kotlin.math.sqrt
  *  - `PacketUtil.sendMove` / `sendMoveAtSelf` feed `selfY` straight into a
  *    feet-frame MovePlayerPacket — the same frame bug, but this time it would
  *    tell the server we are 1.62 higher than we are.
+ *  - `EntityTracker.selfOnGround` for any outgoing move. `handleAuthInput`
+ *    never writes it, so on an auth-input server it holds whatever the last
+ *    MovePlayerPacket claimed — and this module sends those. Mirroring a move
+ *    that claims "airborne" while the player stands on the floor makes the
+ *    client apply gravity from the position we just set: it sinks into the
+ *    ground. `standingOn` reads the block under the feet instead.
  *
  * Because one auth-input packet carries one rotation, a rotating pass places
  * **one** block (the nearest open cell) instead of `Max per tick`. The ring is
@@ -216,6 +222,7 @@ class Surround : BaseModule(
         pending.clear()
         confirmed.clear()
         lastAnchor  = null
+        lastCenterMs = 0L
     }
 
     override fun onDisable() {
@@ -223,6 +230,7 @@ class Surround : BaseModule(
         pending.clear()
         confirmed.clear()
         lastAnchor  = null
+        lastCenterMs = 0L
         super.onDisable()
     }
 
@@ -369,11 +377,29 @@ class Surround : BaseModule(
     /** Anchor cell the `confirmed` set belongs to. */
     @Volatile private var lastAnchor: Pair<Int, Int>? = null
 
+    /** Last centre snap, for `CENTER_COOLDOWN_MS`. */
+    @Volatile private var lastCenterMs = 0L
+
     /** How far to look for an entity standing in a surround spot (Extend). */
     private val EXTEND_SCAN = 6f
 
     /** Off-centre distance small enough to leave alone rather than snap. */
     private val CENTER_EPS = 0.05f
+
+    /**
+     * Minimum gap between two centre snaps. Without it the snap re-fires on
+     * every pass: the client has not yet reported the position we just sent, so
+     * `offCentre` reads true again and we teleport the player a second time —
+     * at the default 80 ms tick that is a dozen forced teleports a second.
+     */
+    private val CENTER_COOLDOWN_MS = 300L
+
+    /**
+     * How close to a block boundary the feet must be to count as standing.
+     * Anything further up is mid-air, where claiming `onGround` would be a lie
+     * the client resolves by dropping us.
+     */
+    private val GROUND_Y_TOL = 0.08f
 
     /**
      * How long a sent placement is assumed to be in flight before we retry it.
@@ -435,7 +461,12 @@ class Surround : BaseModule(
 
     private fun pass(session: RubidiumRelaySession, packet: PlayerAuthInputPacket) {
         if (!WorldBlockTracker.hasAnyTerrainData()) return
-        if (onlyOnGround.value && !EntityTracker.selfOnGround) return
+        // `standingOn`, not `EntityTracker.selfOnGround` — that field is never
+        // written from PlayerAuthInputPacket (see `standingOn`), so gating on it
+        // could switch the module off permanently while standing still.
+        if (onlyOnGround.value &&
+            !standingOn(EntityTracker.selfX, CollisionGuard.feetY(), EntityTracker.selfZ)
+        ) return
         if (trigger.value == Trigger.ON_TOGGLE && oneShotDone) return
         if (trigger.value == Trigger.SMART && !threatNearby()) return
 
@@ -619,6 +650,24 @@ class Surround : BaseModule(
         }
 
     /**
+     * Are we standing on a real block, read from the world?
+     *
+     * Deliberately NOT `EntityTracker.selfOnGround`. That field is only written
+     * by `handleMovePlayer` (EntityTracker.kt:377) and the reset at :214 —
+     * `handleAuthInput` never touches it. On a server that feeds us
+     * PlayerAuthInput only, it therefore holds whatever the last MovePlayerPacket
+     * claimed, and since this module is itself a MovePlayerPacket source the
+     * value latches onto whatever we sent last.
+     */
+    private fun standingOn(x: Float, fy: Float, z: Float): Boolean {
+        if (fy - floor(fy) > GROUND_Y_TOL) return false
+        val below = WorldBlockTracker.getBlockIdentifier(
+            floor(x).toInt(), floor(fy).toInt() - 1, floor(z).toInt()
+        ) ?: return false          // no terrain data → do not claim ground
+        return below !in REPLACEABLE
+    }
+
+    /**
      * Snap the player to the centre of the block they are standing in.
      *
      * Feet-frame Y on purpose. `PacketUtil.sendMoveAtSelf` would pass
@@ -627,17 +676,37 @@ class Surround : BaseModule(
      * `mirrorToClient` is required, not cosmetic: without it the server has us
      * centred while the local physics engine keeps the old spot and pulls us
      * back, which is the rubber-band the `PacketUtil` comment warns about.
+     *
+     * The mirrored packet must not claim a ground state the world contradicts.
+     * A MovePlayerPacket that arrives with `isOnGround = false` puts the client's
+     * local player into a falling state at the position we just set — it applies
+     * gravity from inside the floor and sinks a block before collision resolves,
+     * which is the "phased into the ground, jump out and it happens again"
+     * report. `standingOn` reads the block under the feet instead.
      */
     private fun centerPlayer(session: RubidiumRelaySession, cx: Float, cz: Float) {
+        val now = System.currentTimeMillis()
+        if (now - lastCenterMs < CENTER_COOLDOWN_MS) return
+        lastCenterMs = now
+
+        val fy      = CollisionGuard.feetY()
+        val grounded = standingOn(cx, fy, cz)
         runCatching {
             PacketUtil.sendMove(
-                session, cx, CollisionGuard.feetY(), cz,
+                session, cx, fy, cz,
                 EntityTracker.selfYaw, EntityTracker.selfPitch,
-                onGround       = EntityTracker.selfOnGround,
+                onGround       = grounded,
                 teleport       = false,
                 mirrorToClient = true
             )
-            if (debug.value) log("centered to (%.2f,%.2f)".format(cx, cz))
+            // Write the snap back, as `RubberbandGuard.send` and `NoLagback`
+            // both do. Without this `offCentre` stays true until the client's
+            // own auth input catches up, so the next pass snaps again.
+            EntityTracker.selfX = cx
+            EntityTracker.selfZ = cz
+            if (debug.value) {
+                log("centered to (%.2f,%.2f) y=%.3f onGround=%b".format(cx, cz, fy, grounded))
+            }
         }.onFailure { log("center threw: ${it.message}") }
     }
 
@@ -708,15 +777,18 @@ class Surround : BaseModule(
      * auth input, so this packet exists purely to move the local camera.
      */
     private fun swingClientCamera(session: RubidiumRelaySession, rot: RotationUtil.Rotation) {
+        val fy = CollisionGuard.feetY()
         runCatching {
             session.clientBound(MovePlayerPacket().apply {
                 runtimeEntityId       = EntityTracker.selfRuntimeId
                 position              = Vector3f.from(
-                    EntityTracker.selfX, CollisionGuard.feetY(), EntityTracker.selfZ
+                    EntityTracker.selfX, fy, EntityTracker.selfZ
                 )
                 rotation              = Vector3f.from(rot.pitch, rot.yaw, rot.yaw)
                 mode                  = MovePlayerPacket.Mode.NORMAL
-                isOnGround            = EntityTracker.selfOnGround
+                // Same hazard as `centerPlayer`: this goes straight to the
+                // client, so a stale `isOnGround = false` drops the player.
+                isOnGround            = standingOn(EntityTracker.selfX, fy, EntityTracker.selfZ)
                 ridingRuntimeEntityId = 0L
             })
         }.onFailure { log("camera mirror threw: ${it.message}") }
