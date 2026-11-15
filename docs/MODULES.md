@@ -96,21 +96,38 @@ adds orbit/strafe positioning on top of the aim.
 - **Key functions**: `searchForTargets`, `isTarget`, `localFrame`,
   `applyRotations`, `applyKiwiRotation`, `kiwiChestPosition`, `resetRotations`.
 
-### Surround — `module/combat/Surround.kt` (421 lines)
+### Surround — `module/combat/Surround.kt` (565 lines)
 Seals the cells around the player's feet with blast-resistant blocks so an end
 crystal detonates outside the hitbox. The ring is built from the **real occupied
 footprint** (a 0.6-wide box can span two or four cells), not one assumed block.
 - **Settings**: Block (OBSIDIAN / CRYING / ANY / CUSTOM), Custom id, Shape
-  (CARDINAL 4 / FULL_RING 8), Trigger (ALWAYS / ON_TOGGLE / SMART), Threat range
-  (12, 4–24), Tick ms (80, 20–2000), Max per tick (1, 1–4), Support floats,
-  Only on ground, Auto-disable when sealed, Debug.
-- **Tick loop**: fixed 50 ms base, gated by `Tick ms` — every setting is live.
-- **Reads**: `WorldBlockTracker` cell ids only; sends no position packets.
+  (CARDINAL 4 / FULL_RING 8), Trigger (ALWAYS / ON_TOGGLE / SMART), Rotation
+  (SILENT / VISIBLE / NONE), Threat range (12, 4–24), Tick ms (80, 20–2000),
+  Max per tick (1, 1–4), Support floats, Only on ground, Auto-disable when
+  sealed, Debug.
+- **Driver**: runs from the outgoing `PlayerAuthInputPacket`, gated by `Tick ms`
+  — not a coroutine timer. Driving from the packet is what keeps the aim ahead
+  of the placement on the wire: the rotation is rewritten and the ITEM_USE is
+  sent inside the same handler. Trade-off: no placements while the game sends no
+  auth input (paused, container screen) — the same trade-off the auras make.
+- **Reads**: `PlayerAuthInputPacket` (rotation rewritten in place), plus
+  `WorldBlockTracker` cell ids.
 - **Creates**: `ITEM_USE` (actionType 0) placements through
-  `PlacementUtil.sendPlacementUseRaw`, with the mandatory consumption action record.
-- **Key functions**: `footprint`, `ringCells`, `cellState`, `placeInto`
-  (falls back to a support block under floating cells), `clickPointFor`,
-  `threatNearby`.
+  `PlacementUtil.sendPlacementUseRaw` with the mandatory consumption action
+  record; in VISIBLE mode also a **clientBound-only** `MovePlayerPacket` to swing
+  the local camera.
+- **Key functions**: `footprint`, `ringCells`, `cellState`, `planFor` (falls back
+  to a support block under floating cells), `lookRotation`, `applyRotation`,
+  `swingClientCamera`, `clickPointFor`, `threatNearby`.
+- **Rotation**: SILENT rewrites the outgoing auth input's rotation (server sees
+  the aim, screen untouched) — the `RotsAura.applyRotation` mechanism. VISIBLE
+  adds the camera mirror. Because one auth input carries one rotation, a rotating
+  pass places a single cell (the nearest open one) rather than `Max per tick`.
+- **Deliberately avoids** `RotationUtil.toPoint` and `PacketUtil.sendMoveAtSelf`:
+  both add to / pass `EntityTracker.selfY` as if it were feet-frame, but it is
+  eye-frame whenever `selfYFrameIsEye` is set (the normal case on auth-input-only
+  servers). Eye Y here comes from `CollisionGuard.feetY() + 1.62`, which is
+  frame-correct. See the class KDoc.
 - **Notes**: first caller of `PlacementUtil.findClickableNeighbor`; face ids are
   the canonical `core/schem/BuildBlocks.Face` numbering. `pauseWhileEating` is
   forced `false` — a placement does not cancel an eat, and a defensive module

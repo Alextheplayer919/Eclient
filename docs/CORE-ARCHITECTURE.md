@@ -38,6 +38,7 @@ inventory), `README.md` (index).
 ### `core/proxy/EntityTracker.kt` (object)
 The client-side world model:
 - **Self**: `selfX/selfY/selfZ`, `selfYaw/selfPitch`, `selfRuntimeId/selfUniqueId`, `selfHotbarSlot`, plus **`selfYFrameIsEye`** — PlayerAuthInput positions are eye-frame (+1.62), `MovePlayerPacket.Position` is feet-frame; the flag tracks which frame `selfY` currently expresses. Everything that measures distance (`AutoBuilder` reach, aura range gates) must respect the frame.
+  - **Known violators — check these before reusing them.** `RotationUtil.toPoint` computes `dy = ty - (selfY + 1.62f)` and `RotationUtil.buildMovePacket` / `PacketUtil.sendMoveAtSelf` put `selfY` straight into a feet-frame `MovePlayerPacket.position`. Both are correct only while `selfYFrameIsEye == false`; on servers that feed PlayerAuthInput only (the V3 case, and the common one) they double-count 1.62 — throwing aim pitch out by tens of degrees at close range, and claiming a position 1.62 too high respectively. The frame-correct eye Y is `CollisionGuard.feetY() + 1.62f`, and the frame-correct feet Y for a MovePlayerPacket is `CollisionGuard.feetY()`. `combat/Surround.kt` does it that way.
 - **Entities**: players/mobs by runtime id, with names (PlayerList), attributes, links (`EntityLinkData`).
 - **Inventory**: hotbar snapshot (`getInventoryItem(slot)`), `getHeldItem()`, netId caches from `AddItemEntityPacket` — the source `PlacementUtil`/`AutoTotem` trust.
 

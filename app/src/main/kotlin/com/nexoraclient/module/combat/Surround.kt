@@ -3,18 +3,23 @@ package com.rubidiumclient.module.combat
 import com.rubidiumclient.core.proxy.CollisionGuard
 import com.rubidiumclient.core.proxy.EntityTracker
 import com.rubidiumclient.core.relay.RubidiumRelaySession
-import com.rubidiumclient.events.PacketEventBus
+import com.rubidiumclient.events.PacketEvent
 import com.rubidiumclient.module.BaseModule
 import com.rubidiumclient.module.ModuleCategory
 import com.rubidiumclient.module.social.isFriendEntity
 import com.rubidiumclient.utils.DiagLog
 import com.rubidiumclient.utils.PlacementUtil
+import com.rubidiumclient.utils.RotationUtil
 import com.rubidiumclient.utils.WorldBlockTracker
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.math.vector.Vector3i
+import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket
+import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket
 import org.cloudburstmc.protocol.bedrock.packet.TextPacket
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.atan2
 import kotlin.math.floor
+import kotlin.math.sqrt
 
 /**
  * Surround — seals the cells around your feet with blast-resistant blocks so an
@@ -49,10 +54,50 @@ import kotlin.math.floor
  * The face ids from `findClickableNeighbor` are the repo's canonical
  * `core/schem/BuildBlocks.Face` numbering (DOWN 0, UP 1, NORTH 2, SOUTH 3,
  * WEST 4, EAST 5) and `clickPointFor` maps each one to a point on that face,
- * matching `BuildBlocks.clickPoint`. No rotation is sent: the ITEM_USE
- * transaction carries `blockPosition`/`blockFace`/`clickPosition`, which is all
- * the server needs for a placement — the same reason AutoTorch and Auto Build
- * never rotate.
+ * matching `BuildBlocks.clickPoint`.
+ *
+ * ## Rotation (`Rotation` setting)
+ *
+ * A placement needs no rotation to work — the ITEM_USE transaction carries
+ * `blockPosition`/`blockFace`/`clickPosition`, which is why AutoTorch and Auto
+ * Build never aim. But servers and anti-cheats that *do* validate aim want to
+ * see the player looking at the face they clicked, so:
+ *
+ *  - **SILENT** (default) — the outgoing `PlayerAuthInputPacket`'s rotation is
+ *    rewritten for the pass that places, so the server sees the aim. No extra
+ *    packet, no position claim, and your screen does not move. This is exactly
+ *    the mechanism `RotsAura.applyRotation` uses.
+ *  - **VISIBLE** — the same rewrite, plus a `clientBound` `MovePlayerPacket`
+ *    that swings your own camera to the block. Injected toward the client
+ *    *only*: a MovePlayerPacket carries a feet-frame position, and re-sending
+ *    one to the server would be a redundant position claim.
+ *  - **NONE** — placements go out un-aimed, as before.
+ *
+ * Two things this deliberately does NOT use:
+ *
+ *  - `RotationUtil.toPoint` computes `dy = ty - (selfY + 1.62f)`, but `selfY`
+ *    is already eye-frame whenever `EntityTracker.selfYFrameIsEye` is true —
+ *    and EntityTracker's own note says "V3 servers feed AuthInput only", so
+ *    that is the common case. Using it would double-count 1.62 and throw the
+ *    pitch out by tens of degrees at one block of range. `lookRotation`
+ *    derives the eye Y from `CollisionGuard.feetY()`, which is frame-correct.
+ *  - `PacketUtil.sendMove` / `sendMoveAtSelf` feed `selfY` straight into a
+ *    feet-frame MovePlayerPacket — the same frame bug, but this time it would
+ *    tell the server we are 1.62 higher than we are.
+ *
+ * Because one auth-input packet carries one rotation, a rotating pass places
+ * **one** block (the nearest open cell) instead of `Max per tick`. The ring is
+ * at most 8 cells, so at the default 80 ms it still closes in under a second.
+ *
+ * ## Driver
+ *
+ * The pass runs from the outgoing `PlayerAuthInputPacket`, gated by `Tick ms`.
+ * Driving from the packet rather than a coroutine timer is what makes the
+ * ordering correct: the rotation is rewritten and the ITEM_USE is sent inside
+ * the same handler, so the server never sees a placement arrive before the aim
+ * that justifies it. Trade-off: no placements while the game sends no auth
+ * input (paused, in a container screen) — the same trade-off RotsAura and
+ * NeonAura make, and you are not in a hole fight then.
  *
  * ## Floating holes (the support stage)
  *
@@ -70,8 +115,8 @@ import kotlin.math.floor
  * `WorldBlockTracker` only learns about a placement when the server echoes an
  * UpdateBlock/SubChunk packet back, which is tens to hundreds of ms later.
  * Until then the cell still reads as air, so every placement is recorded in
- * `pending` with a TTL and treated as "already handled". Without that, a
- * 50 ms tick would fire four packets per cell per second.
+ * `pending` with a TTL and treated as "already handled". Without that, every
+ * auth input would fire four packets per cell per second.
  *
  * A cell whose id is `null` (chunk data never received) is reported as UNKNOWN
  * and **skipped**, never filled in blind — placing into an unloaded chunk is
@@ -86,8 +131,7 @@ import kotlin.math.floor
  *
  * ## Settings that need a re-toggle
  *
- * None. The loop runs on a fixed 50 ms base tick and gates itself on
- * `Tick ms`, so every setting here is live.
+ * None. Every setting is read on the pass that uses it.
  */
 class Surround : BaseModule(
     name        = "Surround",
@@ -100,10 +144,14 @@ class Surround : BaseModule(
     private enum class Trigger     { ALWAYS, ON_TOGGLE, SMART }
     private enum class CellState   { FILLED, EMPTY, PENDING, UNKNOWN }
 
+    /** Where the aim goes. SILENT = server only, VISIBLE = server + your screen. */
+    private enum class RotMode     { SILENT, VISIBLE, NONE }
+
     private val blockChoice    = enum("Block", BlockChoice.OBSIDIAN)
     private val customId       = string("Custom id", "minecraft:obsidian")
     private val shape          = enum("Shape", Shape.CARDINAL)
     private val trigger        = enum("Trigger", Trigger.ALWAYS)
+    private val rotationMode   = enum("Rotation", RotMode.SILENT)
     private val threatRange    = float("Threat range", 12f, 4f, 24f)
     private val tickMs         = int("Tick ms", 80, 20, 2000)
     private val perTick        = int("Max per tick", 1, 1, 4)
@@ -127,20 +175,29 @@ class Surround : BaseModule(
         oneShotDone = false
         nextRunAt   = 0L
         pending.clear()
-        launchTickLoop(BASE_TICK_MS) {
-            val session = PacketEventBus.currentSession ?: return@launchTickLoop
-            lastSession = session
-            val now = System.currentTimeMillis()
-            if (now < nextRunAt) return@launchTickLoop
-            nextRunAt = now + tickMs.value.toLong().coerceAtLeast(1L)
-            runCatching { tick(session) }.onFailure { log("tick threw: ${it.message}") }
-        }
     }
 
     override fun onDisable() {
         lastSession = null
         pending.clear()
         super.onDisable()
+    }
+
+    /**
+     * The whole module runs here — see "Driver" in the class doc. Rewriting the
+     * rotation and sending the ITEM_USE from the same handler is what keeps the
+     * aim ahead of the placement on the wire.
+     */
+    override fun onPacket(event: PacketEvent) {
+        if (event.direction != PacketEvent.Direction.CLIENT_TO_SERVER) return
+        val packet = event.packet as? PlayerAuthInputPacket ?: return
+        val session = event.session
+        lastSession = session
+
+        val now = System.currentTimeMillis()
+        if (now < nextRunAt) return
+        nextRunAt = now + tickMs.value.toLong().coerceAtLeast(1L)
+        runCatching { pass(session, packet) }.onFailure { log("pass threw: ${it.message}") }
     }
 
     // ── block choice ───────────────────────────────────────────────────────
@@ -197,6 +254,9 @@ class Surround : BaseModule(
 
     /** Half the Bedrock player box width (0.6 / 2). */
     private val HALF_W = 0.3f
+
+    /** Standing eye height. Matches `CollisionGuard.EYE`. */
+    private val EYE = 1.62f
 
     /** Every cell the player's box actually occupies on this Y level. */
     private fun footprint(x: Float, z: Float): Set<Pair<Int, Int>> {
@@ -261,9 +321,36 @@ class Surround : BaseModule(
         return true
     }
 
+    // ── placement plan ─────────────────────────────────────────────────────
+
+    /** Which existing block face to click to fill a cell, and where the new
+     *  block ends up. Split out from sending so the rotation can be computed
+     *  and applied BEFORE the ITEM_USE goes out. */
+    private data class Plan(
+        val support: Vector3i,
+        val face:    Int,
+        val tx:      Int,
+        val ty:      Int,
+        val tz:      Int
+    )
+
+    private fun planFor(x: Int, y: Int, z: Int, sink: ((String) -> Unit)?): Plan? {
+        PlacementUtil.findClickableNeighbor(x, y, z)?.let { nb ->
+            return Plan(nb.first, nb.third, x, y, z)
+        }
+        // Nothing solid touches the cell — you are on a pillar. Put a floor
+        // under it first; the next pass clicks that floor's top face.
+        if (!supportFloats.value) return null
+        val sy = y - 1
+        if (isPending(x, sy, z)) return null
+        val sup = PlacementUtil.findClickableNeighbor(x, sy, z) ?: return null
+        sink?.invoke("support stage: floor under ($x,$y,$z) from (${sup.first.x},${sup.first.y},${sup.first.z})")
+        return Plan(sup.first, sup.third, x, sy, z)
+    }
+
     // ── main pass ──────────────────────────────────────────────────────────
 
-    private fun tick(session: RubidiumRelaySession) {
+    private fun pass(session: RubidiumRelaySession, packet: PlayerAuthInputPacket) {
         if (!WorldBlockTracker.hasAnyTerrainData()) return
         if (onlyOnGround.value && !EntityTracker.selfOnGround) return
         if (trigger.value == Trigger.ON_TOGGLE && oneShotDone) return
@@ -308,11 +395,16 @@ class Surround : BaseModule(
         // One prepare per pass: switching the hotbar per block would send a
         // MobEquipment packet for every cell and read as a macro server-side.
         val prepared = PlacementUtil.prepareItemForUse(session, id, debugSink = sink) ?: return
+        // One auth-input packet carries one rotation, so a rotating pass places
+        // a single cell — the nearest open one, since `todo` is sorted.
+        val cap = if (rotationMode.value == RotMode.NONE) perTick.value else 1
         var placed = 0
         try {
             for (c in todo) {
-                if (placed >= perTick.value) break
-                if (placeInto(session, prepared, id, c.first, py, c.second, sink)) placed++
+                if (placed >= cap) break
+                val plan = planFor(c.first, py, c.second, sink) ?: continue
+                applyRotation(session, packet, plan)
+                if (send(session, prepared, id, plan, sink)) placed++
             }
         } finally {
             PlacementUtil.revert(session, prepared)
@@ -332,50 +424,105 @@ class Surround : BaseModule(
         return EntityTracker.getPlayers(r).any { !it.isFriendEntity }
     }
 
-    // ── placement ──────────────────────────────────────────────────────────
+    // ── rotation ───────────────────────────────────────────────────────────
 
-    private fun placeInto(
-        session:  RubidiumRelaySession,
-        prepared: PlacementUtil.PreparedItem,
-        id:       String,
-        x:        Int,
-        y:        Int,
-        z:        Int,
-        sink:     ((String) -> Unit)?
-    ): Boolean {
-        PlacementUtil.findClickableNeighbor(x, y, z)?.let { nb ->
-            return send(session, prepared, id, nb.first, nb.third, x, y, z, sink)
-        }
-        // Nothing solid touches the cell — you are on a pillar. Put a floor
-        // under it first; the next pass clicks that floor's top face.
-        if (!supportFloats.value) return false
-        val sy = y - 1
-        if (isPending(x, sy, z)) return false
-        val sup = PlacementUtil.findClickableNeighbor(x, sy, z) ?: return false
-        sink?.invoke("support stage: floor under ($x,$y,$z) from (${sup.first.x},${sup.first.y},${sup.first.z})")
-        return send(session, prepared, id, sup.first, sup.third, x, sy, z, sink)
+    /**
+     * Yaw/pitch from the player's eye to the exact point on the clicked face.
+     *
+     * Not `RotationUtil.toPoint`: that helper adds 1.62 to `selfY`
+     * unconditionally, but `selfY` is already eye-frame whenever
+     * `selfYFrameIsEye` is set — the normal case on servers that only feed
+     * PlayerAuthInput. `CollisionGuard.feetY()` normalises the frame, so adding
+     * the eye height back on top of it is correct either way.
+     */
+    private fun lookRotation(plan: Plan): RotationUtil.Rotation? {
+        val cp = clickPointFor(plan.face)
+        val tx = plan.support.x + cp.x
+        val ty = plan.support.y + cp.y
+        val tz = plan.support.z + cp.z
+
+        val eyeY = CollisionGuard.feetY() + EYE
+        val dx = tx - EntityTracker.selfX
+        val dy = ty - eyeY
+        val dz = tz - EntityTracker.selfZ
+        val horiz = sqrt((dx * dx + dz * dz).toDouble())
+        if (!horiz.isFinite()) return null
+
+        val yaw   = Math.toDegrees(atan2(-dx.toDouble(), dz.toDouble())).toFloat()
+        val pitch = Math.toDegrees(-atan2(dy.toDouble(), horiz)).toFloat()
+        if (!yaw.isFinite() || !pitch.isFinite()) return null
+        return RotationUtil.Rotation(RotationUtil.normalize(yaw), pitch.coerceIn(-90f, 90f))
     }
+
+    private fun applyRotation(
+        session: RubidiumRelaySession,
+        packet:  PlayerAuthInputPacket,
+        plan:    Plan
+    ) {
+        if (rotationMode.value == RotMode.NONE) return
+        val rot = lookRotation(plan) ?: return
+
+        // Server-side aim: rewrite the packet that is already on its way out.
+        // Rotation only — never touch `packet.position`, which is the frame the
+        // server is tracking us in.
+        packet.rotation = Vector3f.from(rot.pitch, rot.yaw, rot.yaw)
+
+        if (rotationMode.value == RotMode.VISIBLE) {
+            // Same choice RotsAura makes when Silent Rotation is off: keep the
+            // tracked state in step so our own HUD/ESP read the aimed rotation.
+            EntityTracker.selfYaw   = rot.yaw
+            EntityTracker.selfPitch = rot.pitch
+            swingClientCamera(session, rot)
+        }
+        if (debug.value) {
+            log("aim (${plan.tx},${plan.ty},${plan.tz}) face=${plan.face} " +
+                "yaw=${"%.1f".format(rot.yaw)} pitch=${"%.1f".format(rot.pitch)} ${rotationMode.value}")
+        }
+    }
+
+    /**
+     * Turn the player's own view to the block.
+     *
+     * Deliberately `clientBound` ONLY. A MovePlayerPacket position is feet-frame
+     * (`EntityTracker.handleMovePlayer`), and the obvious shortcut —
+     * `PacketUtil.sendMoveAtSelf` — feeds it `EntityTracker.selfY`, which is
+     * eye-frame on auth-input servers; that would tell the server we are 1.62
+     * higher than we are. The server already has the aim from the rewritten
+     * auth input, so this packet exists purely to move the local camera.
+     */
+    private fun swingClientCamera(session: RubidiumRelaySession, rot: RotationUtil.Rotation) {
+        runCatching {
+            session.clientBound(MovePlayerPacket().apply {
+                runtimeEntityId       = EntityTracker.selfRuntimeId
+                position              = Vector3f.from(
+                    EntityTracker.selfX, CollisionGuard.feetY(), EntityTracker.selfZ
+                )
+                rotation              = Vector3f.from(rot.pitch, rot.yaw, rot.yaw)
+                mode                  = MovePlayerPacket.Mode.NORMAL
+                isOnGround            = EntityTracker.selfOnGround
+                ridingRuntimeEntityId = 0L
+            })
+        }.onFailure { log("camera mirror threw: ${it.message}") }
+    }
+
+    // ── placement ──────────────────────────────────────────────────────────
 
     private fun send(
         session:  RubidiumRelaySession,
         prepared: PlacementUtil.PreparedItem,
         id:       String,
-        supportPos: Vector3i,
-        face:     Int,
-        tx:       Int,
-        ty:       Int,
-        tz:       Int,
+        plan:     Plan,
         sink:     ((String) -> Unit)?
     ): Boolean {
         val ok = runCatching {
             PlacementUtil.sendPlacementUseRaw(
-                session, prepared, supportPos, id,
-                blockFace     = face,
-                clickPosition = clickPointFor(face),
+                session, prepared, plan.support, id,
+                blockFace     = plan.face,
+                clickPosition = clickPointFor(plan.face),
                 debugSink     = sink
             )
         }.getOrDefault(false)
-        if (ok) markPending(tx, ty, tz)
+        if (ok) markPending(plan.tx, plan.ty, plan.tz)
         return ok
     }
 
@@ -414,8 +561,5 @@ class Surround : BaseModule(
 
     private companion object {
         const val TAG = "Surround"
-        /** Base loop rate. `Tick ms` gates it, so this only sets the resolution
-         *  at which setting changes are noticed. */
-        const val BASE_TICK_MS = 50L
     }
 }
