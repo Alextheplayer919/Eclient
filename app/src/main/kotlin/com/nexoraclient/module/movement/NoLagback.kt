@@ -58,6 +58,7 @@ class NoLagback : BaseModule(
     private val collisionGuard  = bool("Collision Guard",    true) // world-consistent fly motion (wall-slide, no slams)
     private val dropResets      = bool("Drop Resets",      false) // SILENT only
     private val dropCorrection  = bool("Drop Corrections", true)  // SILENT only
+    private val shortcut = bool("Shortcut", false)
 
     private var lastResyncMs = 0L
 

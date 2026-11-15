@@ -114,6 +114,7 @@ object ModuleManager {
             HitboxModule(),
             Criticals(),
             AutoTotem(),
+            Surround(),
 
             // ── MOVEMENT ─────────────────────────────────────────────
             Speed(),

@@ -118,6 +118,7 @@ class NeonAura : BaseModule(
     private val strafe              = bool ("Strafe", false)
     private val strafeRadius        = float("Strafe Radius", 2.5f, 1f, 6f)
     private val spinDirection       = enum("Spin Direction", RotationUtil.Orbit.SpinDirection.LEFT)
+    private val shortcut = bool("Shortcut", false)
 
     // ── engine state (instance-owned: no cross-module statics) ───────────────
     private var lastAttackTime = 0L

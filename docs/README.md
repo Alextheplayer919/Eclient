@@ -8,7 +8,7 @@ or protocol usage change.
 
 | Doc | Covers |
 |---|---|
-| **MODULES.md** | All 55 registered module instances: purpose, settings (defaults+ranges), packets read/created/sent, key functions. Includes the framework contract (`BaseModule`/`ModuleManager`), filename↔class-name drift table, and the unregistered-but-present files. |
+| **MODULES.md** | All 58 registered module instances: purpose, settings (defaults+ranges), packets read/created/sent, key functions. Includes the framework contract (`BaseModule`/`ModuleManager`), filename↔class-name drift table, and the unregistered-but-present files. |
 | **PROTOCOL.md** | Every CloudburstMC class used in the tree → consumer files, blast-radius ranking, the 15 invariants the code physically relies on, version-gate watchpoints. Start here when a protocol/codec/NBT dependency update breaks or changes behaviour. |
 | **CORE-ARCHITECTURE.md** | Relay topology (`RubidiumRelay`/`RubidiumRelaySession`, `serverBound`/`clientBound`), the `PacketEventBus` (cancel/replace semantics + threading), trackers (`EntityTracker` incl. the eye/feet Y-frame flag, `WorldBlockTracker`, `CollisionGuard`, `MovementCompliance`), god-utils (`PlacementUtil`, `InventoryUtil`, …), and one-liners for auth/config/session/ui. |
 

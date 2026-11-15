@@ -36,6 +36,7 @@ class Timer : BaseModule(
     private val pvpMode          = bool ("PvP Timer",           false)
     private val pvpMaxStepSetting = float("PvP Max Step",       0.9f,  0.3f, 2.0f)
     private val pvpStepDelay     = int  ("PvP Step Delay (ms)", 12,    2,   40)
+    private val shortcut = bool("Shortcut", false)
 
     val pvpModeEnabled: Boolean get() = pvpMode.value
     val pvpMaxStep: Float       get() = pvpMaxStepSetting.value

@@ -10,6 +10,8 @@ class AntiKnockback : BaseModule(
     category    = ModuleCategory.MOVEMENT,
     description = "Gelen knockback'i tamamen engeller"
 ) {
+    private val shortcut = bool("Shortcut", false)
+
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
         if (event.direction != PacketEvent.Direction.SERVER_TO_CLIENT) return

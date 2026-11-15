@@ -26,6 +26,7 @@ class Speed : BaseModule(
     private val multiplier   = float("Multiplier", 1.5f, 1.0f, 5.0f) // Motion modu için
     private val walkSpeedVal = float("Walk Speed",  0.2f, 0.1f, 1.0f) // Ability modu için
     private val motionInterval = int("Motion Delay", 55, 15, 150) // Motion modu için
+    private val shortcut = bool("Shortcut", false)
 
     @Volatile private var lastSession: RubidiumRelaySession? = null
     @Volatile private var abilitiesSent = false

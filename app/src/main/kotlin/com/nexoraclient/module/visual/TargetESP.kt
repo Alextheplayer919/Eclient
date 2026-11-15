@@ -49,6 +49,7 @@ class TargetESP : BaseModule(
     private val smoothBox      = bool ("Smooth Box",     true)
     private val smoothFactor   = float("Smooth Factor",  0.35f, 0.05f, 1f)
     private val nearestGlow    = bool ("Highlight Nearest", true)
+    private val shortcut = bool("Shortcut", false)
 
     private val renderList = CopyOnWriteArrayList<RenderEntry>()
     private var updateJob: Job? = null

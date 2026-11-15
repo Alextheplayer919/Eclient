@@ -36,6 +36,7 @@ class GodModeModule : BaseModule(
 
     private val hideDamage = bool("HideDamage", true)
     private val hideHurtAnim = bool("HideHurtAnimation", true)
+    private val shortcut = bool("Shortcut", false)
 
     override fun onPacket(event: PacketEvent) {
         if (!isEnabled) return
